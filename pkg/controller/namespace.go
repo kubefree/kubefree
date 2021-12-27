@@ -6,6 +6,7 @@ import (
 )
 
 const (
+	// TODO: 改成Duration
 	SleepAfterSecondsLabel  = "sleepmode.kubefree.com/sleep-after-seconds"
 	DeleteAfterSecondsLabel = "sleepmode.kubefree.com/delete-after-seconds"
 	ExecutionStateLabel     = "sleepmode.kubefree.com/state"
