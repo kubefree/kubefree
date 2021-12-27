@@ -54,6 +54,7 @@ func (c *controller) SyncLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// TODO: 异步执行
 			c.sync()
 		}
 	}
@@ -61,6 +62,7 @@ func (c *controller) SyncLoop(ctx context.Context) {
 
 func (c *controller) sync() {
 	// TODO: 无脑拉所有 vs 基于Label来list
+	// TODO: inform 模式
 	nsList, err := c.clientset.CoreV1().Namespaces().List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		logrus.WithError(err).Fatalln("Error list namespaces")
@@ -78,7 +80,7 @@ func (c *controller) sync() {
 			logrus.WithError(err).Fatalln("Error getActivity")
 		}
 
-		// check delete-after rules
+		// check delete-after-seconds rules
 		if err = c.SyncDeleteAfterRules(ns, *lastActivityStatus); err != nil {
 			logrus.WithError(err).Fatalln("Error SyncDeleteAfterRules")
 		}
