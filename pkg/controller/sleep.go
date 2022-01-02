@@ -7,7 +7,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
-	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
@@ -16,7 +16,7 @@ import (
 
 // method to scale workload's replica to 0 or recovery
 type Sleeper interface {
-	Sleep(ns corev1.Namespace) error
+	Sleep(ns *v1.Namespace) error
 	WakeUp(ns string) error
 }
 
@@ -31,7 +31,7 @@ type genericSleeper struct {
 
 var _ Sleeper = &genericSleeper{}
 
-func (s *genericSleeper) Sleep(ns corev1.Namespace) error {
+func (s *genericSleeper) Sleep(ns *v1.Namespace) error {
 	// 依次判断deployment、statefulset、deamonset，每个执行以下操作
 	// 	1. 判断是否有legacy replicas，如果有则报错
 	// 	2. 获得原来的replicas，并保存为legacy replicas annotation
