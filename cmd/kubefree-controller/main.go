@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"path/filepath"
@@ -59,5 +58,11 @@ func main() {
 		logrus.WithError(err).Fatal("Error plank.NewController")
 	}
 
-	ctl.SyncLoop(context.TODO())
+	stop := make(chan struct{})
+	defer close(stop)
+
+	go ctl.Run(2, stop)
+
+	// wait forever
+	select {}
 }
