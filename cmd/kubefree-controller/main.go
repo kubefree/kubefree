@@ -3,13 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	"path/filepath"
 
 	"github.com/sirupsen/logrus"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/util/homedir"
 
 	ctl "github.com/kubefree/pkg/controller"
 	"github.com/kubefree/pkg/logrusutil"
@@ -20,13 +18,9 @@ func main() {
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", logrus.InfoLevel.String(), fmt.Sprintf("Logging level, one of %v", logrus.AllLevels))
+	var kubeconfig string
+	flag.StringVar(&kubeconfig, "kubeconfig", "", "absolute path to the kubeconfig file")
 
-	var kubeconfig *string
-	if home := homedir.HomeDir(); home != "" {
-		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
-	} else {
-		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
-	}
 	flag.Parse()
 
 	level, err := logrus.ParseLevel(logLevel)
@@ -36,8 +30,8 @@ func main() {
 	logrus.SetLevel(level)
 
 	var config *rest.Config
-	if kubeconfig != nil {
-		config, err = clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	if len(kubeconfig) > 0 {
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
 			logrus.WithError(err).Fatal("Error clientcmd.BuildConfigFromFlags")
 		}
