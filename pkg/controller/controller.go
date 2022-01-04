@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -83,8 +82,8 @@ func NewController(clientset *kubernetes.Clientset) (*controller, error) {
 		indexer:                  indexer,
 		informer:                 informer,
 		queue:                    queue,
-		DeleteAfterSelector:      DeleteAfterSecondsLabel,
-		SleepAfterSelector:       SleepAfterSecondsLabel,
+		DeleteAfterSelector:      DeleteAfterLabel,
+		SleepAfterSelector:       SleepAfterLabel,
 		ActivityStatusAnnotation: NamespaceActivityStatusAnnotation,
 		ExecutionStateSelector:   ExecutionStateLabel,
 	}, nil
@@ -194,13 +193,13 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 	}
 
 	// check delete-after-seconds rules
-	if err = c.SyncDeleteAfterRules(ns, *lastActivityStatus); err != nil {
+	if err = c.syncDeleteAfterRules(ns, *lastActivityStatus); err != nil {
 		logrus.WithError(err).Fatalln("Error SyncDeleteAfterRules")
 		return err
 	}
 
 	// check sleep-after rules
-	if err = c.SyncSleepAfterRules(ns, *lastActivityStatus); err != nil {
+	if err = c.syncSleepAfterRules(ns, *lastActivityStatus); err != nil {
 		logrus.WithError(err).Fatalln("Error SyncSleepAfterRules")
 		return err
 	}
@@ -208,42 +207,8 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 	return nil
 }
 
-// func (c *controller) sync() {
-// 	// TODO: 无脑拉所有 vs 基于Label来list
-// 	// TODO: inform 模式
-// 	nsList, err := c.clientset.CoreV1().Namespaces().List(context.Background(), metav1.ListOptions{})
-// 	if err != nil {
-// 		logrus.WithError(err).Fatalln("Error list namespaces")
-// 	}
-
-// 	logrus.WithField("count", len(nsList.Items)).Info("total namespaces")
-// 	for _, ns := range nsList.Items {
-// 		ac, ok := ns.Annotations[c.ActivityStatusAnnotation]
-// 		if !ok || ac == "" {
-// 			// activity status not exists
-// 			continue
-// 		}
-// 		lastActivityStatus, err := getActivity(ac)
-// 		if err != nil {
-// 			logrus.WithError(err).Fatalln("Error getActivity")
-// 		}
-
-// 		// check delete-after-seconds rules
-// 		if err = c.SyncDeleteAfterRules(ns, *lastActivityStatus); err != nil {
-// 			logrus.WithError(err).Fatalln("Error SyncDeleteAfterRules")
-// 		}
-
-// 		// check sleep-after rules
-// 		if err = c.SyncSleepAfterRules(ns, *lastActivityStatus); err != nil {
-// 			logrus.WithError(err).Fatalln("Error SyncSleepAfterRules")
-// 		}
-// 	}
-// 	// TODO: 统计每一轮的用时，最好用统一的Reqid来标记，方便后续排查问题
-// 	logrus.Info("End of sync all namespaces")
-// }
-
 // target sleep-after rules
-func (c *controller) SyncSleepAfterRules(namespace *v1.Namespace, lastActivity activity) error {
+func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity activity) error {
 	v, ok := namespace.Labels[c.SleepAfterSelector]
 	if !ok || v == "" {
 		// namespace doesn't have sleep-after label, do nothing
@@ -251,20 +216,21 @@ func (c *controller) SyncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 	}
 	logrus.WithField("namespace", namespace.Name).WithField("sleep-after", v).Debug("check it's sleep-after rule")
 
-	threshold, err := strconv.Atoi(v)
+	thresholdDuration, err := time.ParseDuration(v)
 	if err != nil {
-		return err
+		return fmt.Errorf("time.ParseDuration failed, label %s, value %s", c.SleepAfterSelector, v)
 	}
 
 	state := namespace.Labels[c.ExecutionStateSelector]
-	if time.Since(lastActivity.LastActivityTime) > time.Duration(threshold)*time.Second {
+	if time.Since(lastActivity.LastActivityTime) > thresholdDuration {
 		switch state {
 		case DELETING:
 			// do nothing
 			// TODO: how to deal it if namespace hangs?
 		case SLEEP, SLEEPING:
 			// delete namespace if the namespace still in inactivity status
-			if namespace.Status.Phase != v1.NamespaceTerminating && time.Since(lastActivity.LastActivityTime)*2 > time.Duration(threshold)*3 {
+			// after thresholdDuration * 2 time
+			if namespace.Status.Phase != v1.NamespaceTerminating && time.Since(lastActivity.LastActivityTime) > thresholdDuration*2 {
 				err = c.clientset.CoreV1().Namespaces().Delete(context.TODO(), namespace.Name, metav1.DeleteOptions{})
 				if err != nil {
 					logrus.WithField("namespace", namespace.Name).Error("Error delete namespace")
@@ -279,13 +245,13 @@ func (c *controller) SyncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 				step2: sleep namespace
 				step3: update execution state with sleep
 			*/
-			if _, err := c.SetKubefreeExecutionState(namespace, SLEEPING); err != nil {
+			if _, err := c.setKubefreeExecutionState(namespace, SLEEPING); err != nil {
 				logrus.WithField("namespace", namespace.Name).WithError(err).Error("failed to SetKubefreeExecutionState")
 			}
 			if err := c.sleeper.Sleep(namespace); err != nil {
 				logrus.WithField("namespace", namespace.Name).WithError(err).Error("failed to sleep namespace")
 			}
-			if _, err := c.SetKubefreeExecutionState(namespace, SLEEP); err != nil {
+			if _, err := c.setKubefreeExecutionState(namespace, SLEEP); err != nil {
 				logrus.WithField("namespace", namespace.Name).WithError(err).Error("failed to SetKubefreeExecutionState")
 			}
 		}
@@ -307,7 +273,7 @@ func (c *controller) SyncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 }
 
 // target delete-after rules
-func (c *controller) SyncDeleteAfterRules(namespace *v1.Namespace, lastActivity activity) error {
+func (c *controller) syncDeleteAfterRules(namespace *v1.Namespace, lastActivity activity) error {
 	v, ok := namespace.Labels[c.DeleteAfterSelector]
 	if !ok || v != "" {
 		// namespace doesn't have delete-after label, do nothing
@@ -315,13 +281,12 @@ func (c *controller) SyncDeleteAfterRules(namespace *v1.Namespace, lastActivity 
 	}
 	logrus.WithField("namespace", namespace.Name).WithField("delete-after", v).Debug("check it's delete-after rule")
 
-	thresholdSeconds, err := strconv.Atoi(v)
+	thresholdDuration, err := time.ParseDuration(v)
 	if err != nil {
-		return err
+		return fmt.Errorf("time.ParseDuration failed, label %s, value %s", c.DeleteAfterSelector, v)
 	}
 
-	// 判断
-	if time.Since(lastActivity.LastActivityTime) > time.Duration(thresholdSeconds) && namespace.Status.Phase != v1.NamespaceTerminating {
+	if time.Since(lastActivity.LastActivityTime) > thresholdDuration && namespace.Status.Phase != v1.NamespaceTerminating {
 		logrus.WithField("namespace", namespace.Name).Info("deleting inactivity namespace")
 		if err != c.clientset.CoreV1().Namespaces().Delete(context.Background(), namespace.Name, metav1.DeleteOptions{}) {
 			logrus.WithField("namespace", namespace.Name).Error("Error delete namespace")
@@ -331,7 +296,7 @@ func (c *controller) SyncDeleteAfterRules(namespace *v1.Namespace, lastActivity 
 	return nil
 }
 
-func (c *controller) SetKubefreeExecutionState(namespace *v1.Namespace, state string) (*v1.Namespace, error) {
+func (c *controller) setKubefreeExecutionState(namespace *v1.Namespace, state string) (*v1.Namespace, error) {
 	ns, err := c.clientset.CoreV1().Namespaces().Get(context.TODO(), namespace.Name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err

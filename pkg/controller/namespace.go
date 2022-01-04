@@ -6,10 +6,9 @@ import (
 )
 
 const (
-	// TODO: 改成Duration
-	SleepAfterSecondsLabel  = "sleepmode.kubefree.com/sleep-after-seconds"
-	DeleteAfterSecondsLabel = "sleepmode.kubefree.com/delete-after-seconds"
-	ExecutionStateLabel     = "sleepmode.kubefree.com/state"
+	SleepAfterLabel     = "sleepmode.kubefree.com/sleep-after"
+	DeleteAfterLabel    = "sleepmode.kubefree.com/delete-after"
+	ExecutionStateLabel = "sleepmode.kubefree.com/state"
 
 	NamespaceActivityStatusAnnotation = "sleepmode.kubefree.com/activity-status"
 	LegacyReplicasAnnotation          = "sleepmode.kubefree.com/legacy-replicas"
