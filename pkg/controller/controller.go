@@ -145,6 +145,12 @@ func (c *controller) processItem(key string) error {
 		return nil
 	}
 
+	// no need to handle namespace in terminating state
+	ns := obj.(*v1.Namespace)
+	if ns.Status.Phase != v1.NamespaceActive {
+		return nil
+	}
+
 	if err := c.checkNamespace(obj.(*v1.Namespace)); err != nil {
 		logrus.WithError(err).Infof("checkNamespace failed, ns: %s", key)
 		return err
@@ -185,12 +191,13 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 		return nil
 	}
 
-	klog.Info("handle ns", ns.Name)
 	lastActivityStatus, err := getActivity(ac)
 	if err != nil {
 		logrus.WithError(err).Fatalln("Error getActivity")
 		return err
 	}
+
+	klog.Infof("pick namespace %s", ns.Name)
 
 	// check delete-after-seconds rules
 	if err = c.syncDeleteAfterRules(ns, *lastActivityStatus); err != nil {
