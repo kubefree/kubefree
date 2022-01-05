@@ -55,6 +55,7 @@ func main() {
 	stop := make(chan struct{})
 	defer close(stop)
 
+	//TODO: workers should be configurable
 	go ctl.Run(2, stop)
 
 	// wait forever

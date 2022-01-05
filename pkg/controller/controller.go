@@ -52,7 +52,7 @@ func NewController(clientset *kubernetes.Clientset) (*controller, error) {
 	// whenever the cache is updated, the pod key is added to the workqueue.
 	// Note that when we finally process the item from the workqueue, we might see a newer version
 	// of the Pod than the version which was responsible for triggering the update.
-	indexer, informer := cache.NewIndexerInformer(sleepNamespaceListWatcher, &v1.Namespace{}, 0, cache.ResourceEventHandlerFuncs{
+	indexer, informer := cache.NewIndexerInformer(sleepNamespaceListWatcher, &v1.Namespace{}, time.Second*30, cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			key, err := cache.MetaNamespaceKeyFunc(obj)
 			if err == nil {
@@ -145,6 +145,12 @@ func (c *controller) processItem(key string) error {
 		return nil
 	}
 
+	// no need to handle namespace in terminating state
+	ns := obj.(*v1.Namespace)
+	if ns.Status.Phase != v1.NamespaceActive {
+		return nil
+	}
+
 	if err := c.checkNamespace(obj.(*v1.Namespace)); err != nil {
 		logrus.WithError(err).Infof("checkNamespace failed, ns: %s", key)
 		return err
@@ -185,12 +191,13 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 		return nil
 	}
 
-	klog.Info("handle ns", ns.Name)
 	lastActivityStatus, err := getActivity(ac)
 	if err != nil {
 		logrus.WithError(err).Fatalln("Error getActivity")
 		return err
 	}
+
+	klog.Infof("pick namespace %s", ns.Name)
 
 	// check delete-after-seconds rules
 	if err = c.syncDeleteAfterRules(ns, *lastActivityStatus); err != nil {

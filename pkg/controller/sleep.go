@@ -37,6 +37,7 @@ func (s *genericSleeper) Sleep(ns *v1.Namespace) error {
 	// 	2. 获得原来的replicas，并保存为legacy replicas annotation
 	//  3. 设置 replicas ==0
 
+	//TODO: refactor
 	// deployment
 	deploymentLists, err := s.clientset.AppsV1().Deployments(ns.Name).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
@@ -49,6 +50,9 @@ func (s *genericSleeper) Sleep(ns *v1.Namespace) error {
 		}
 
 		newD := d.DeepCopy()
+		if newD.Annotations == nil {
+			newD.Annotations = make(map[string]string)
+		}
 		newD.Annotations[LegacyReplicasAnnotation] = strconv.FormatInt(int64(*newD.Spec.Replicas), 10)
 		_, err := s.clientset.AppsV1().Deployments(ns.Name).Update(context.TODO(), newD, metav1.UpdateOptions{})
 		if err != nil {
@@ -84,6 +88,9 @@ func (s *genericSleeper) Sleep(ns *v1.Namespace) error {
 		}
 
 		newSs := ss.DeepCopy()
+		if newSs.Annotations == nil {
+			newSs.Annotations = make(map[string]string)
+		}
 		newSs.Annotations[LegacyReplicasAnnotation] = strconv.FormatInt(int64(*newSs.Spec.Replicas), 10)
 		_, err = s.clientset.AppsV1().StatefulSets(ns.Name).Update(context.TODO(), newSs, metav1.UpdateOptions{})
 		if err != nil {
