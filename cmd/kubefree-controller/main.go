@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"k8s.io/client-go/kubernetes"
@@ -22,6 +23,9 @@ func main() {
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "absolute path to the kubeconfig file")
 	var dryRun bool
 	flag.BoolVar(&dryRun, "dryRun", false, "If set, kubefree controller will not delete or sleep namespace, but still annotate it")
+	var resyncDuration time.Duration
+	flag.DurationVar(&resyncDuration, "resyncDuration", time.Minute, "Resync duration for kubefree controller to list all namespaces")
+
 	flag.Parse()
 
 	level, err := logrus.ParseLevel(logLevel)
@@ -48,7 +52,7 @@ func main() {
 		logrus.WithError(err).Fatal("Error kubernetes.NewForConfig")
 	}
 
-	ctl, err := ctl.NewController(clientset)
+	ctl, err := ctl.NewController(clientset, resyncDuration)
 	if err != nil {
 		logrus.WithError(err).Fatal("Error plank.NewController")
 	}

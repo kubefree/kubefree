@@ -40,7 +40,7 @@ type controller struct {
 	DryRun bool
 }
 
-func NewController(clientset *kubernetes.Clientset) (*controller, error) {
+func NewController(clientset *kubernetes.Clientset, resyncDuration time.Duration) (*controller, error) {
 	cachedDiscoveryClient := cacheddiscovery.NewMemCacheClient(clientset.DiscoveryClient)
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedDiscoveryClient)
 	scaleKindResolver := scale.NewDiscoveryScaleKindResolver(clientset.DiscoveryClient)
@@ -53,7 +53,7 @@ func NewController(clientset *kubernetes.Clientset) (*controller, error) {
 	// whenever the cache is updated, the pod key is added to the workqueue.
 	// Note that when we finally process the item from the workqueue, we might see a newer version
 	// of the Pod than the version which was responsible for triggering the update.
-	indexer, informer := cache.NewIndexerInformer(sleepNamespaceListWatcher, &v1.Namespace{}, time.Second*30, cache.ResourceEventHandlerFuncs{
+	indexer, informer := cache.NewIndexerInformer(sleepNamespaceListWatcher, &v1.Namespace{}, resyncDuration, cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			key, err := cache.MetaNamespaceKeyFunc(obj)
 			if err == nil {
