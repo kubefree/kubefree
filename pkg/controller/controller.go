@@ -288,7 +288,7 @@ func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 // target delete-after rules
 func (c *controller) syncDeleteAfterRules(namespace *v1.Namespace, lastActivity activity) error {
 	v, ok := namespace.Labels[c.DeleteAfterSelector]
-	if !ok || v != "" {
+	if !ok || v == "" {
 		// namespace doesn't have delete-after label, do nothing
 		return nil
 	}
