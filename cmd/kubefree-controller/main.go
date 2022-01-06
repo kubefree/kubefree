@@ -20,7 +20,8 @@ func main() {
 	flag.StringVar(&logLevel, "log-level", logrus.InfoLevel.String(), fmt.Sprintf("Logging level, one of %v", logrus.AllLevels))
 	var kubeconfig string
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "absolute path to the kubeconfig file")
-
+	var dryRun bool
+	flag.BoolVar(&dryRun, "dryRun", false, "If set, kubefree controller will not delete or sleep namespace, but still annotate it")
 	flag.Parse()
 
 	level, err := logrus.ParseLevel(logLevel)
@@ -50,6 +51,11 @@ func main() {
 	ctl, err := ctl.NewController(clientset)
 	if err != nil {
 		logrus.WithError(err).Fatal("Error plank.NewController")
+	}
+
+	if dryRun {
+		logrus.Info("Running in dryRun mode")
+		ctl.DryRun = dryRun
 	}
 
 	stop := make(chan struct{})

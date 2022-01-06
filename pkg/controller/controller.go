@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -37,6 +36,8 @@ type controller struct {
 	SleepAfterSelector       string
 	ActivityStatusAnnotation string
 	ExecutionStateSelector   string
+
+	DryRun bool
 }
 
 func NewController(clientset *kubernetes.Clientset) (*controller, error) {
@@ -238,12 +239,14 @@ func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 			// delete namespace if the namespace still in inactivity status
 			// after thresholdDuration * 2 time
 			if namespace.Status.Phase != v1.NamespaceTerminating && time.Since(lastActivity.LastActivityTime) > thresholdDuration*2 {
-				err = c.clientset.CoreV1().Namespaces().Delete(context.TODO(), namespace.Name, metav1.DeleteOptions{})
-				if err != nil {
-					logrus.WithField("namespace", namespace.Name).Error("Error delete namespace")
-					return err
-				}
 				logrus.WithField("namespace", namespace.Name).WithField("sleep-after", v).Info("delete inactivity namespace")
+				if !c.DryRun {
+					err = c.clientset.CoreV1().Namespaces().Delete(context.TODO(), namespace.Name, metav1.DeleteOptions{})
+					if err != nil {
+						logrus.WithField("namespace", namespace.Name).Error("Error delete namespace")
+						return err
+					}
+				}
 			}
 		default:
 			/*
@@ -252,11 +255,14 @@ func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 				step2: sleep namespace
 				step3: update execution state with sleep
 			*/
+			logrus.WithField("namespace", namespace.Name).Info("sleep this namespace")
 			if _, err := c.setKubefreeExecutionState(namespace, SLEEPING); err != nil {
 				logrus.WithField("namespace", namespace.Name).WithError(err).Error("failed to SetKubefreeExecutionState")
 			}
-			if err := c.sleeper.Sleep(namespace); err != nil {
-				logrus.WithField("namespace", namespace.Name).WithError(err).Error("failed to sleep namespace")
+			if !c.DryRun {
+				if err := c.sleeper.Sleep(namespace); err != nil {
+					logrus.WithField("namespace", namespace.Name).WithError(err).Error("failed to sleep namespace")
+				}
 			}
 			if _, err := c.setKubefreeExecutionState(namespace, SLEEP); err != nil {
 				logrus.WithField("namespace", namespace.Name).WithError(err).Error("failed to SetKubefreeExecutionState")
@@ -295,9 +301,11 @@ func (c *controller) syncDeleteAfterRules(namespace *v1.Namespace, lastActivity 
 
 	if time.Since(lastActivity.LastActivityTime) > thresholdDuration && namespace.Status.Phase != v1.NamespaceTerminating {
 		logrus.WithField("namespace", namespace.Name).Info("deleting inactivity namespace")
-		if err != c.clientset.CoreV1().Namespaces().Delete(context.Background(), namespace.Name, metav1.DeleteOptions{}) {
-			logrus.WithField("namespace", namespace.Name).Error("Error delete namespace")
-			return err
+		if !c.DryRun {
+			if err != c.clientset.CoreV1().Namespaces().Delete(context.Background(), namespace.Name, metav1.DeleteOptions{}) {
+				logrus.WithField("namespace", namespace.Name).Error("Error delete namespace")
+				return err
+			}
 		}
 	}
 	return nil
@@ -323,7 +331,7 @@ func (c *controller) setKubefreeExecutionState(namespace *v1.Namespace, state st
 		return nil, err
 	}
 
-	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldNsData, newNsData, &corev1.Namespace{})
+	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldNsData, newNsData, &v1.Namespace{})
 	if err != nil {
 		return nil, err
 	}
