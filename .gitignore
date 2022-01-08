@@ -31,3 +31,6 @@ test/ceph-secret.yaml
 
 # deploy configs
 config
+
+# binary
+cmd/kubefree-controller/kubefree-controller
