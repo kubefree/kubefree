@@ -198,7 +198,7 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 		return err
 	}
 
-	klog.Infof("pick namespace %s", ns.Name)
+	logrus.Debugf("pick namespace %s", ns.Name)
 
 	// check delete-after-seconds rules
 	if err = c.syncDeleteAfterRules(ns, *lastActivityStatus); err != nil {
@@ -255,7 +255,7 @@ func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 				step2: sleep namespace
 				step3: update execution state with sleep
 			*/
-			logrus.WithField("namespace", namespace.Name).Info("sleep this namespace")
+			logrus.WithField("namespace", namespace.Name).Info("sleep inactivity namespace")
 			if _, err := c.setKubefreeExecutionState(namespace, SLEEPING); err != nil {
 				logrus.WithField("namespace", namespace.Name).WithError(err).Error("failed to SetKubefreeExecutionState")
 			}
