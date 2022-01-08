@@ -239,7 +239,9 @@ func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 			// delete namespace if the namespace still in inactivity status
 			// after thresholdDuration * 2 time
 			if namespace.Status.Phase != v1.NamespaceTerminating && time.Since(lastActivity.LastActivityTime) > thresholdDuration*2 {
-				logrus.WithField("namespace", namespace.Name).WithField("sleep-after", v).Info("delete inactivity namespace")
+				logrus.WithField("namespace", namespace.Name).
+					WithField("lastActivityTime", lastActivity.LastActivityTime).
+					WithField("sleep-after", v).Info("delete inactivity namespace")
 				if !c.DryRun {
 					err = c.clientset.CoreV1().Namespaces().Delete(context.TODO(), namespace.Name, metav1.DeleteOptions{})
 					if err != nil {
@@ -255,7 +257,9 @@ func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 				step2: sleep namespace
 				step3: update execution state with sleep
 			*/
-			logrus.WithField("namespace", namespace.Name).Info("sleep inactivity namespace")
+			logrus.WithField("namespace", namespace.Name).
+				WithField("lastActivityTime", lastActivity.LastActivityTime).
+				WithField("sleep-after", v).Info("sleep inactivity namespace")
 			if _, err := c.setKubefreeExecutionState(namespace, SLEEPING); err != nil {
 				logrus.WithField("namespace", namespace.Name).WithError(err).Error("failed to SetKubefreeExecutionState")
 			}
@@ -300,7 +304,9 @@ func (c *controller) syncDeleteAfterRules(namespace *v1.Namespace, lastActivity 
 	}
 
 	if time.Since(lastActivity.LastActivityTime) > thresholdDuration && namespace.Status.Phase != v1.NamespaceTerminating {
-		logrus.WithField("namespace", namespace.Name).Info("deleting inactivity namespace")
+		logrus.WithField("namespace", namespace.Name).
+			WithField("lastActivityTime", lastActivity.LastActivityTime).
+			WithField("delete-after", v).Info("deleting inactivity namespace")
 		if !c.DryRun {
 			if err != c.clientset.CoreV1().Namespaces().Delete(context.Background(), namespace.Name, metav1.DeleteOptions{}) {
 				logrus.WithField("namespace", namespace.Name).Error("Error delete namespace")
