@@ -25,8 +25,8 @@ import (
 )
 
 type controller struct {
-	clientset *kubernetes.Clientset
-	sleeper   Sleeper
+	clientset    *kubernetes.Clientset
+	scalesGetter scale.ScalesGetter
 
 	indexer  cache.Indexer
 	informer cache.Controller
@@ -79,7 +79,7 @@ func NewController(clientset *kubernetes.Clientset, resyncDuration time.Duration
 
 	return &controller{
 		clientset:                clientset,
-		sleeper:                  NewSleeper(scaler, clientset),
+		scalesGetter:             scaler,
 		indexer:                  indexer,
 		informer:                 informer,
 		queue:                    queue,
