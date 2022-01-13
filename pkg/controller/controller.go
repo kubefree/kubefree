@@ -25,8 +25,8 @@ import (
 )
 
 type controller struct {
-	clientset *kubernetes.Clientset
-	sleeper   Sleeper
+	clientset    *kubernetes.Clientset
+	scalesGetter scale.ScalesGetter
 
 	indexer  cache.Indexer
 	informer cache.Controller
@@ -79,7 +79,7 @@ func NewController(clientset *kubernetes.Clientset, resyncDuration time.Duration
 
 	return &controller{
 		clientset:                clientset,
-		sleeper:                  NewSleeper(scaler, clientset),
+		scalesGetter:             scaler,
 		indexer:                  indexer,
 		informer:                 informer,
 		queue:                    queue,
@@ -261,27 +261,30 @@ func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 				WithField("lastActivityTime", lastActivity.LastActivityTime).
 				WithField("sleep-after", v).Info("sleep inactivity namespace")
 			if _, err := c.setKubefreeExecutionState(namespace, SLEEPING); err != nil {
-				logrus.WithField("namespace", namespace.Name).WithError(err).Error("failed to SetKubefreeExecutionState")
+				logrus.WithField("namespace", namespace.Name).WithError(err).Fatal("failed to SetKubefreeExecutionState")
 			}
 			if !c.DryRun {
-				if err := c.sleeper.Sleep(namespace); err != nil {
-					logrus.WithField("namespace", namespace.Name).WithError(err).Error("failed to sleep namespace")
+				if err := c.Sleep(namespace); err != nil {
+					logrus.WithField("namespace", namespace.Name).WithError(err).Fatal("failed to sleep namespace")
 				}
 			}
 			if _, err := c.setKubefreeExecutionState(namespace, SLEEP); err != nil {
-				logrus.WithField("namespace", namespace.Name).WithError(err).Error("failed to SetKubefreeExecutionState")
+				logrus.WithField("namespace", namespace.Name).WithError(err).Fatal("failed to SetKubefreeExecutionState")
 			}
 		}
 	} else {
 		switch state {
 		case SLEEPING, SLEEP:
-			// TODO: do recovery
-			// 这块需要考虑服务的启动顺序。
-			// 也许并发的恢复所有的服务，出错的概率会小？
-			// klog.Info("recovery namespace", namespace.Name)
-			// if _, err := c.SetKubefreeExecutionState(namespace, NORMAL); err != nil {
-			// 	logrus.WithField("namespace", namespace.Name).WithError(err).Error("failed to SetKubefreeExecutionState")
-			// }
+			klog.Infof("wake up namespace %s", namespace.Name)
+			if !c.DryRun {
+				if err := c.WakeUp(namespace); err != nil {
+					logrus.WithField("namespace", namespace.Name).WithError(err).Errorln("failed to wake up namespace")
+				}
+			}
+
+			if _, err := c.setKubefreeExecutionState(namespace, NORMAL); err != nil {
+				logrus.WithField("namespace", namespace.Name).WithError(err).Errorln("failed to SetKubefreeExecutionState")
+			}
 		default:
 			// still in activity time scope,so do nothing
 		}
