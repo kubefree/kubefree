@@ -276,12 +276,14 @@ func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 		switch state {
 		case SLEEPING, SLEEP:
 			klog.Infof("wake up namespace %s", namespace.Name)
-			if err := c.WakeUp(namespace); err != nil {
-				logrus.WithField("namespace", namespace.Name).WithError(err).Fatal("failed to wake up namespace")
+			if !c.DryRun {
+				if err := c.WakeUp(namespace); err != nil {
+					logrus.WithField("namespace", namespace.Name).WithError(err).Errorln("failed to wake up namespace")
+				}
 			}
 
 			if _, err := c.setKubefreeExecutionState(namespace, NORMAL); err != nil {
-				logrus.WithField("namespace", namespace.Name).WithError(err).Fatal("failed to SetKubefreeExecutionState")
+				logrus.WithField("namespace", namespace.Name).WithError(err).Errorln("failed to SetKubefreeExecutionState")
 			}
 		default:
 			// still in activity time scope,so do nothing

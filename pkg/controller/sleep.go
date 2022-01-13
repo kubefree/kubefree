@@ -37,12 +37,7 @@ func (c *controller) Sleep(ns *v1.Namespace) error {
 	}
 
 	for _, d := range deploymentLists.Items {
-		// TODO: Necessary?
-		if v, ok := d.Annotations[LegacyReplicasAnnotation]; ok && v != "" {
-			return fmt.Errorf("deployment %s already has legacy replicas annotation %s", d.Name, LegacyReplicasAnnotation)
-		}
-
-		_, err = c.patchDeploymentWithAnnotation(&d, LegacyReplicasAnnotation, string(*d.Spec.Replicas))
+		_, err = c.patchDeploymentWithAnnotation(&d, LegacyReplicasAnnotation, strconv.FormatInt(int64(*d.Spec.Replicas), 10))
 		if err != nil {
 			return fmt.Errorf("failed to set annotation for deployment %s, err: %v", d.Name, err)
 		}
@@ -62,11 +57,7 @@ func (c *controller) Sleep(ns *v1.Namespace) error {
 	}
 
 	for _, ss := range ssLists.Items {
-		if v, ok := ss.Annotations[LegacyReplicasAnnotation]; ok && v != "" {
-			return fmt.Errorf("statefulset %s already has legacy replicas annotation %s", ss.Name, LegacyReplicasAnnotation)
-		}
-
-		_, err = c.patchStatefulsetWithAnnotation(&ss, LegacyReplicasAnnotation, string(*ss.Spec.Replicas))
+		_, err = c.patchStatefulsetWithAnnotation(&ss, LegacyReplicasAnnotation, strconv.FormatInt(int64(*ss.Spec.Replicas), 10))
 		if err != nil {
 			return fmt.Errorf("failed to set annotation for statefulset %s, err: %v", ss.Name, err)
 		}
@@ -165,7 +156,7 @@ func (c *controller) WakeUp(ns *v1.Namespace) error {
 func (c *controller) scale(ctx context.Context, name, namespace, scale string, resource schema.GroupResource) (*autoscalingv1.Scale, error) {
 	i, err := strconv.ParseInt(scale, 10, 32)
 	if err != nil {
-		return nil, fmt.Errorf("strconv.ParseInt failed for scale %s", scale)
+		return nil, fmt.Errorf("strconv.ParseInt failed for scale %s/%s", namespace, name)
 	}
 
 	targetScale := &autoscalingv1.Scale{
