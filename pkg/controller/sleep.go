@@ -7,12 +7,14 @@ import (
 	"sync"
 
 	"github.com/sirupsen/logrus"
+	apps "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/scale"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/klog/v2"
 )
 
 // method to scale workload's replica to 0 or recovery
@@ -21,18 +23,7 @@ type Sleeper interface {
 	WakeUp(ns *v1.Namespace) error
 }
 
-func NewSleeper(scalesGetter scale.ScalesGetter, clientset *kubernetes.Clientset) Sleeper {
-	return &genericSleeper{sleepClient: scalesGetter, clientset: clientset}
-}
-
-type genericSleeper struct {
-	sleepClient scale.ScalesGetter
-	clientset   *kubernetes.Clientset
-}
-
-var _ Sleeper = &genericSleeper{}
-
-func (s *genericSleeper) Sleep(ns *v1.Namespace) error {
+func (c *controller) Sleep(ns *v1.Namespace) error {
 	// 依次判断deployment、statefulset、deamonset，每个执行以下操作
 	// 	1. 判断是否有legacy replicas，如果有则报错
 	// 	2. 获得原来的replicas，并保存为legacy replicas annotation
@@ -40,26 +31,23 @@ func (s *genericSleeper) Sleep(ns *v1.Namespace) error {
 
 	//TODO: refactor
 	// deployment
-	deploymentLists, err := s.clientset.AppsV1().Deployments(ns.Name).List(context.TODO(), metav1.ListOptions{})
+	deploymentLists, err := c.clientset.AppsV1().Deployments(ns.Name).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to list deployments, with err %v", err)
 	}
 
 	for _, d := range deploymentLists.Items {
+		// TODO: Necessary?
 		if v, ok := d.Annotations[LegacyReplicasAnnotation]; ok && v != "" {
 			return fmt.Errorf("deployment %s already has legacy replicas annotation %s", d.Name, LegacyReplicasAnnotation)
 		}
 
-		newD := d.DeepCopy()
-		if newD.Annotations == nil {
-			newD.Annotations = make(map[string]string)
-		}
-		newD.Annotations[LegacyReplicasAnnotation] = strconv.FormatInt(int64(*newD.Spec.Replicas), 10)
-		_, err := s.clientset.AppsV1().Deployments(ns.Name).Update(context.TODO(), newD, metav1.UpdateOptions{})
+		_, err = c.patchDeploymentWithAnnotation(&d, LegacyReplicasAnnotation, string(*d.Spec.Replicas))
 		if err != nil {
 			return fmt.Errorf("failed to set annotation for deployment %s, err: %v", d.Name, err)
 		}
-		_, err = s.scale(context.TODO(), d.Name, d.Namespace, "0", schema.GroupResource{Group: "apps", Resource: "deployments"})
+
+		_, err = c.scale(context.TODO(), d.Name, d.Namespace, "0", schema.GroupResource{Group: "apps", Resource: "deployments"})
 		if err != nil {
 			return fmt.Errorf("failed to update scale for deployment %s/%s, with err %v", d.Namespace, d.Name, err)
 		}
@@ -68,7 +56,7 @@ func (s *genericSleeper) Sleep(ns *v1.Namespace) error {
 	}
 
 	// statefulset
-	ssLists, err := s.clientset.AppsV1().StatefulSets(ns.Name).List(context.TODO(), metav1.ListOptions{})
+	ssLists, err := c.clientset.AppsV1().StatefulSets(ns.Name).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to list StatefulSets, with err %v", err)
 	}
@@ -78,17 +66,12 @@ func (s *genericSleeper) Sleep(ns *v1.Namespace) error {
 			return fmt.Errorf("statefulset %s already has legacy replicas annotation %s", ss.Name, LegacyReplicasAnnotation)
 		}
 
-		newSs := ss.DeepCopy()
-		if newSs.Annotations == nil {
-			newSs.Annotations = make(map[string]string)
-		}
-		newSs.Annotations[LegacyReplicasAnnotation] = strconv.FormatInt(int64(*newSs.Spec.Replicas), 10)
-		_, err = s.clientset.AppsV1().StatefulSets(ns.Name).Update(context.TODO(), newSs, metav1.UpdateOptions{})
+		_, err = c.patchStatefulsetWithAnnotation(&ss, LegacyReplicasAnnotation, string(*ss.Spec.Replicas))
 		if err != nil {
 			return fmt.Errorf("failed to set annotation for statefulset %s, err: %v", ss.Name, err)
 		}
 
-		_, err = s.scale(context.TODO(), ss.Name, ss.Namespace, "0", schema.GroupResource{Group: "apps", Resource: "statefulsets"})
+		_, err = c.scale(context.TODO(), ss.Name, ss.Namespace, "0", schema.GroupResource{Group: "apps", Resource: "statefulsets"})
 		if err != nil {
 			return fmt.Errorf("failed to update scale for statefulset %s/%s, with err %v", ss.Namespace, ss.Name, err)
 		}
@@ -100,33 +83,39 @@ func (s *genericSleeper) Sleep(ns *v1.Namespace) error {
 	return nil
 }
 
-//TODO
-func (s *genericSleeper) WakeUp(ns *v1.Namespace) error {
+//TODO: is it necessary to delete legacy replicas annotation?
+func (c *controller) WakeUp(ns *v1.Namespace) error {
 	// 依次判断deployment、statefulset、deamonset，每个执行以下操作
 	// 	1. 判断是否有legacy replicas，如果没有则报错
 	//  2. 设置 replicas == legacy replicas
-	//  3. 删除 legacy replicas
-	// 另，因为pod原始可能会有启动顺序依赖，为降低错误率，此处采用
-	// 并行恢复所有的workloads
 
 	workloadWg := &sync.WaitGroup{}
 
+	// error channel to collect failures.
+	// will make the buffer big enough to avoid any blocking
+	var errCh chan error
+
 	// deployment
-	deploymentLists, err := s.clientset.AppsV1().Deployments(ns.Name).List(context.TODO(), metav1.ListOptions{})
+	deploymentLists, err := c.clientset.AppsV1().Deployments(ns.Name).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to list deployments, with err %v", err)
 	}
+
+	// TODO: can deploymentLists be nil?
 	if deploymentLists != nil {
 		workloadWg.Add(len(deploymentLists.Items))
+		errCh = make(chan error, len(deploymentLists.Items))
 	}
 
 	// statefulset
-	ssLists, err := s.clientset.AppsV1().StatefulSets(ns.Name).List(context.TODO(), metav1.ListOptions{})
+	ssLists, err := c.clientset.AppsV1().StatefulSets(ns.Name).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to list StatefulSets, with err %v", err)
 	}
+	// TODO: can ssLists be nil?
 	if ssLists != nil {
 		workloadWg.Add(len(ssLists.Items))
+		errCh = make(chan error, len(errCh)+len(deploymentLists.Items))
 	}
 
 	for _, d := range deploymentLists.Items {
@@ -135,28 +124,45 @@ func (s *genericSleeper) WakeUp(ns *v1.Namespace) error {
 			return fmt.Errorf("unexpected legacy replicas annotation %s for the deployment %s", LegacyReplicasAnnotation, d.Name)
 		}
 
-		newD := d.DeepCopy()
-		if newD.Annotations == nil {
-			newD.Annotations = make(map[string]string)
-		}
-		newD.Annotations[LegacyReplicasAnnotation] = strconv.FormatInt(int64(*newD.Spec.Replicas), 10)
-		_, err := s.clientset.AppsV1().Deployments(ns.Name).Update(context.TODO(), newD, metav1.UpdateOptions{})
-		if err != nil {
-			return fmt.Errorf("failed to set annotation for deployment %s, err: %v", d.Name, err)
-		}
-
-		_, err = s.scale(context.TODO(), d.Name, d.Namespace, v, schema.GroupResource{Group: "apps", Resource: "deployments"})
-		if err != nil {
-			return fmt.Errorf("failed to update scale for deployment %s/%s, with err %v", d.Namespace, d.Name, err)
-		}
-
-		logrus.WithField("namespace", ns.Name).WithField("deployment", d.Name).Info("sleep deployment successfully")
+		go func(d apps.Deployment) {
+			defer workloadWg.Done()
+			_, err = c.scale(context.TODO(), d.Name, d.Namespace, v, schema.GroupResource{Group: "apps", Resource: "deployments"})
+			if err != nil {
+				klog.V(2).Infof("Failed scaled for deployment %q/%q", d.Namespace, d.Name)
+				errCh <- err
+				utilruntime.HandleError(err)
+			}
+		}(d)
 	}
 
-	return nil
+	for _, ss := range ssLists.Items {
+		v, ok := ss.Annotations[LegacyReplicasAnnotation]
+		if !ok || len(v) == 0 {
+			return fmt.Errorf("unexpected legacy replicas annotation %s for the deployment %s", LegacyReplicasAnnotation, ss.Name)
+		}
+
+		go func(ss apps.StatefulSet) {
+			defer workloadWg.Done()
+			_, err = c.scale(context.TODO(), ss.Name, ss.Namespace, v, schema.GroupResource{Group: "apps", Resource: "statefulsets"})
+			if err != nil {
+				klog.V(2).Infof("Failed scaled for deployment %q/%q", ss.Namespace, ss.Name)
+				errCh <- err
+				utilruntime.HandleError(err)
+			}
+		}(ss)
+	}
+
+	workloadWg.Wait()
+	// collect errors if any for proper reporting/retry logic in the controller
+	errors := []error{}
+	close(errCh)
+	for err := range errCh {
+		errors = append(errors, err)
+	}
+	return utilerrors.NewAggregate(errors)
 }
 
-func (s *genericSleeper) scale(ctx context.Context, name, namespace, scale string, resource schema.GroupResource) (*autoscalingv1.Scale, error) {
+func (c *controller) scale(ctx context.Context, name, namespace, scale string, resource schema.GroupResource) (*autoscalingv1.Scale, error) {
 	i, err := strconv.ParseInt(scale, 10, 32)
 	if err != nil {
 		return nil, fmt.Errorf("strconv.ParseInt failed for scale %s", scale)
@@ -172,5 +178,5 @@ func (s *genericSleeper) scale(ctx context.Context, name, namespace, scale strin
 		},
 	}
 
-	return s.sleepClient.Scales(namespace).Update(ctx, resource, targetScale, metav1.UpdateOptions{})
+	return c.scalesGetter.Scales(namespace).Update(ctx, resource, targetScale, metav1.UpdateOptions{})
 }
