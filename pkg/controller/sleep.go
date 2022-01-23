@@ -72,16 +72,16 @@ func (c *controller) Sleep(ns *v1.Namespace) error {
 	// deamonsets
 	dsLists, err := c.clientset.AppsV1().DaemonSets(ns.Name).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to list DaemonSets, with err %v", err)
+		return fmt.Errorf("failed to list daemonset, with err %v", err)
 	}
 
 	for _, ss := range dsLists.Items {
 		_, err = c.patchDaemonsetWithNodeAffinity(&ss, LegacyReplicasAnnotation, strconv.FormatInt(int64(ss.Status.DesiredNumberScheduled), 10))
 		if err != nil {
-			return fmt.Errorf("failed to set annotation for statefulset %s, err: %v", ss.Name, err)
+			return fmt.Errorf("failed to set annotation for daemonset %s, err: %v", ss.Name, err)
 		}
 
-		logrus.WithField("namespace", ns.Name).WithField("statefulset", ss.Name).Info("sleep statefulset successfully")
+		logrus.WithField("namespace", ns.Name).WithField("daemonset", ss.Name).Info("sleep daemonset successfully")
 	}
 
 	// TODO: others?

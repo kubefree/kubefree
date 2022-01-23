@@ -127,7 +127,7 @@ func (c *controller) patchStatefulsetWithAnnotation(s *apps.StatefulSet, annotat
 // hardcode flag for sleep daemonset
 var defaultExpression = v1.NodeSelectorRequirement{
 	Key:      "sleep.kubefree.com/not-existing-key",
-	Operator: v1.NodeSelectorOpExists,
+	Operator: v1.NodeSelectorOpIn,
 	Values:   []string{"sleep"},
 }
 
@@ -217,11 +217,19 @@ func (c *controller) patchDaemonsetWithoutSpecificNodeAffinity(s *apps.DaemonSet
 				newExpression = append(newExpression, express)
 			}
 		}
-		var newNodeSelectorTerm = st
-		newNodeSelectorTerm.MatchExpressions = newExpression
-		newSelectorTerm = append(newSelectorTerm, newNodeSelectorTerm)
+
+		if len(newExpression) != 0 {
+			var newNodeSelectorTerm = st
+			newNodeSelectorTerm.MatchExpressions = newExpression
+			newSelectorTerm = append(newSelectorTerm, newNodeSelectorTerm)
+		}
 	}
-	newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = newSelectorTerm
+
+	if len(newSelectorTerm) != 0 {
+		newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = newSelectorTerm
+	} else {
+		newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = nil
+	}
 
 	newData, err := json.Marshal(newD)
 	if err != nil {
