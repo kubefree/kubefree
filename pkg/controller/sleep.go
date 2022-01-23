@@ -69,6 +69,21 @@ func (c *controller) Sleep(ns *v1.Namespace) error {
 		logrus.WithField("namespace", ns.Name).WithField("statefulset", ss.Name).Info("sleep statefulset successfully")
 	}
 
+	// deamonsets
+	dsLists, err := c.clientset.AppsV1().DaemonSets(ns.Name).List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to list daemonset, with err %v", err)
+	}
+
+	for _, ss := range dsLists.Items {
+		_, err = c.patchDaemonsetWithNodeAffinity(&ss, LegacyReplicasAnnotation, strconv.FormatInt(int64(ss.Status.DesiredNumberScheduled), 10))
+		if err != nil {
+			return fmt.Errorf("failed to set annotation for daemonset %s, err: %v", ss.Name, err)
+		}
+
+		logrus.WithField("namespace", ns.Name).WithField("daemonset", ss.Name).Info("sleep daemonset successfully")
+	}
+
 	// TODO: others?
 
 	return nil
@@ -106,13 +121,41 @@ func (c *controller) WakeUp(ns *v1.Namespace) error {
 	// TODO: can ssLists be nil?
 	if ssLists != nil {
 		workloadWg.Add(len(ssLists.Items))
-		errCh = make(chan error, len(errCh)+len(deploymentLists.Items))
+		errCh = make(chan error, len(errCh)+len(ssLists.Items))
 	}
 
-	for _, d := range deploymentLists.Items {
-		v, ok := d.Annotations[LegacyReplicasAnnotation]
+	// deamonsets
+	dsLists, err := c.clientset.AppsV1().DaemonSets(ns.Name).List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to list DaemonSets, with err %v", err)
+	}
+
+	if dsLists != nil {
+		workloadWg.Add(len(dsLists.Items))
+		errCh = make(chan error, len(errCh)+len(dsLists.Items))
+	}
+
+	for _, dsItem := range dsLists.Items {
+		v, ok := dsItem.Annotations[LegacyReplicasAnnotation]
 		if !ok || len(v) == 0 {
-			return fmt.Errorf("unexpected legacy replicas annotation %s for the deployment %s", LegacyReplicasAnnotation, d.Name)
+			return fmt.Errorf("unexpected legacy replicas annotation %s for the daemonset %s", LegacyReplicasAnnotation, dsItem.Name)
+		}
+		go func(ds apps.DaemonSet) {
+			defer workloadWg.Done()
+			_, err = c.patchDaemonsetWithoutSpecificNodeAffinity(&ds, LegacyReplicasAnnotation, strconv.FormatInt(int64(ds.Status.DesiredNumberScheduled), 10))
+			if err != nil {
+				klog.V(2).Infof("Failed scaled for daemonset %q/%q", ds.Namespace, &ds.Name)
+				errCh <- err
+				utilruntime.HandleError(err)
+			}
+
+		}(dsItem)
+	}
+
+	for _, deploy := range deploymentLists.Items {
+		v, ok := deploy.Annotations[LegacyReplicasAnnotation]
+		if !ok || len(v) == 0 {
+			return fmt.Errorf("unexpected legacy replicas annotation %s for the deployment %s", LegacyReplicasAnnotation, deploy.Name)
 		}
 
 		go func(d apps.Deployment) {
@@ -123,13 +166,13 @@ func (c *controller) WakeUp(ns *v1.Namespace) error {
 				errCh <- err
 				utilruntime.HandleError(err)
 			}
-		}(d)
+		}(deploy)
 	}
 
-	for _, ss := range ssLists.Items {
-		v, ok := ss.Annotations[LegacyReplicasAnnotation]
+	for _, statefulsetItem := range ssLists.Items {
+		v, ok := statefulsetItem.Annotations[LegacyReplicasAnnotation]
 		if !ok || len(v) == 0 {
-			return fmt.Errorf("unexpected legacy replicas annotation %s for the deployment %s", LegacyReplicasAnnotation, ss.Name)
+			return fmt.Errorf("unexpected legacy replicas annotation %s for the deployment %s", LegacyReplicasAnnotation, statefulsetItem.Name)
 		}
 
 		go func(ss apps.StatefulSet) {
@@ -140,7 +183,7 @@ func (c *controller) WakeUp(ns *v1.Namespace) error {
 				errCh <- err
 				utilruntime.HandleError(err)
 			}
-		}(ss)
+		}(statefulsetItem)
 	}
 
 	workloadWg.Wait()
