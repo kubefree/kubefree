@@ -236,6 +236,12 @@ func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 			// do nothing
 			// TODO: how to deal it if namespace hangs?
 		case SLEEP, SLEEPING:
+			// 当存在delete标签时不走此处的删除逻辑
+			v, ok := namespace.Labels[c.DeleteAfterSelector]
+			if ok && v != "" {
+				logrus.WithField("namespace", namespace.Name).WithField("delete-after", v).Debug("skip delete namespace")
+				return nil
+			}
 			// delete namespace if the namespace still in inactivity status
 			// after thresholdDuration * 2 time
 			if namespace.Status.Phase != v1.NamespaceTerminating && time.Since(lastActivity.LastActivityTime) > thresholdDuration*2 {
