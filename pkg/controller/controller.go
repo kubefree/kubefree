@@ -218,7 +218,7 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 // target sleep-after rules
 func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity activity) error {
 	v, ok := namespace.Labels[c.SleepAfterSelector]
-	if !ok || v == "" {
+	if !ok || v == "" || v == "null" {
 		// namespace doesn't have sleep-after label, do nothing
 		return nil
 	}
@@ -301,7 +301,7 @@ func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 // target delete-after rules
 func (c *controller) syncDeleteAfterRules(namespace *v1.Namespace, lastActivity activity) error {
 	v, ok := namespace.Labels[c.DeleteAfterSelector]
-	if !ok || v == "" {
+	if !ok || v == "" || v == "null" {
 		// namespace doesn't have delete-after label, do nothing
 		return nil
 	}
@@ -313,16 +313,40 @@ func (c *controller) syncDeleteAfterRules(namespace *v1.Namespace, lastActivity 
 	}
 
 	if time.Since(lastActivity.LastActivityTime) > thresholdDuration && namespace.Status.Phase != v1.NamespaceTerminating {
+		// Delete all PVCs in the namespace
+		pvcList, err := c.clientset.CoreV1().PersistentVolumeClaims(namespace.Name).List(context.Background(), metav1.ListOptions{})
+		if err != nil {
+			logrus.WithField("namespace", namespace.Name).Error("Error listing PVCs in namespace")
+			return err
+		}
+		for _, pvc := range pvcList.Items {
+			if err := c.clientset.CoreV1().PersistentVolumeClaims(namespace.Name).Delete(context.Background(), pvc.Name, metav1.DeleteOptions{}); err != nil {
+				logrus.WithFields(logrus.Fields{
+					"namespace": namespace.Name,
+					"pvc":       pvc.Name,
+				}).Error("Error deleting PVC in namespace")
+				return err
+			}
+			logrus.WithFields(logrus.Fields{
+				"namespace": namespace.Name,
+				"pvc":       pvc.Name,
+			}).Info("Deleted PVC in namespace")
+		}
+	
+		// Delete the namespace
 		logrus.WithField("namespace", namespace.Name).
 			WithField("lastActivityTime", lastActivity.LastActivityTime).
 			WithField("delete-after", v).Info("deleting inactivity namespace")
+
 		if !c.DryRun {
-			if err != c.clientset.CoreV1().Namespaces().Delete(context.Background(), namespace.Name, metav1.DeleteOptions{}) {
-				logrus.WithField("namespace", namespace.Name).Error("Error delete namespace")
+			if err := c.clientset.CoreV1().Namespaces().Delete(context.Background(), namespace.Name, metav1.DeleteOptions{}); err != nil {
+				logrus.WithField("namespace", namespace.Name).Error("Error deleting namespace")
 				return err
 			}
+			logrus.WithField("namespace", namespace.Name).Info("Deleted namespace")
 		}
 	}
+	
 	return nil
 }
 
