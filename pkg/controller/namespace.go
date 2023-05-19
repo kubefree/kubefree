@@ -36,8 +36,28 @@ type userInfo struct {
 	Impersonate string `json:"Impersonate"`
 	RancherName string `json:"RancherName, omitempty"`
 }
+
+type customTime time.Time
+
+func (ct *customTime) UnmarshalJSON(b []byte) error {
+	// 尝试解析带时区偏移量的格式
+	t, err := time.Parse(`"2006-01-02T15:04:05Z07:00"`, string(b))
+	if err == nil {
+		*ct = customTime(t)
+		return nil
+	}
+
+	// 尝试解析不带时区偏移量的格式
+	t, err = time.Parse(`"2006-01-02T15:04:05"`, string(b))
+	if err != nil {
+		return err
+	}
+
+	*ct = customTime(t.UTC())
+	return nil
+}
 type activity struct {
-	LastActivityTime time.Time `json:"LastActivityTime"`
+	LastActivityTime customTime `json:"LastActivityTime"`
 	Action           string    `json:"Action"`
 	Resource         string    `json:"Resource"`
 	Namespace        string    `json:"Namespace"`
@@ -51,6 +71,10 @@ func getActivity(src string) (*activity, error) {
 		return nil, err
 	}
 	return activity, nil
+}
+
+func (ct *customTime) Time() time.Time {
+	return time.Time(*ct)
 }
 
 func (c *controller) validDeploymentAnnotation(d *apps.Deployment, annotation, value string) (*apps.Deployment, error) {

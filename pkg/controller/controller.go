@@ -194,7 +194,7 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 
 	lastActivityStatus, err := getActivity(ac)
 	if err != nil {
-		logrus.WithError(err).Fatalln("Error getActivity")
+		logrus.WithError(err).Fatalln("Error getActivity: %v", ac)
 		return err
 	}
 
@@ -230,7 +230,7 @@ func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 	}
 
 	state := namespace.Labels[c.ExecutionStateSelector]
-	if time.Since(lastActivity.LastActivityTime) > thresholdDuration {
+	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration {
 		switch state {
 		case DELETING:
 			// do nothing
@@ -244,7 +244,7 @@ func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 			}
 			// delete namespace if the namespace still in inactivity status
 			// after thresholdDuration * 2 time
-			if namespace.Status.Phase != v1.NamespaceTerminating && time.Since(lastActivity.LastActivityTime) > thresholdDuration*2 {
+			if namespace.Status.Phase != v1.NamespaceTerminating && time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration*2 {
 				logrus.WithField("namespace", namespace.Name).
 					WithField("lastActivityTime", lastActivity.LastActivityTime).
 					WithField("sleep-after", v).Info("delete inactivity namespace")
@@ -313,6 +313,7 @@ func (c *controller) syncDeleteAfterRules(namespace *v1.Namespace, lastActivity 
 	}
 
 	if time.Since(lastActivity.LastActivityTime) > thresholdDuration && namespace.Status.Phase != v1.NamespaceTerminating {
+		// Delete the namespace
 		logrus.WithField("namespace", namespace.Name).
 			WithField("lastActivityTime", lastActivity.LastActivityTime).
 			WithField("delete-after", v).Info("deleting inactivity namespace")
