@@ -37,13 +37,19 @@ type userInfo struct {
 	RancherName string `json:"RancherName, omitempty"`
 }
 
-type customTime time.Time
+type CustomTime time.Time
 
-func (ct *customTime) UnmarshalJSON(b []byte) error {
+func (ct CustomTime) MarshalJSON() ([]byte, error) {
+	t := time.Time(ct)
+	formattedTime := t.Format("2006-01-02T15:04:05Z07:00")
+	return []byte(`"` + formattedTime + `"`), nil
+}
+
+func (ct *CustomTime) UnmarshalJSON(b []byte) error {
 	// 尝试解析带时区偏移量的格式
 	t, err := time.Parse(`"2006-01-02T15:04:05Z07:00"`, string(b))
 	if err == nil {
-		*ct = customTime(t)
+		*ct = CustomTime(t)
 		return nil
 	}
 
@@ -53,19 +59,20 @@ func (ct *customTime) UnmarshalJSON(b []byte) error {
 		return err
 	}
 
-	*ct = customTime(t.UTC())
+	*ct = CustomTime(t.UTC())
 	return nil
 }
-type activity struct {
-	LastActivityTime customTime `json:"LastActivityTime"`
-	Action           string    `json:"Action"`
-	Resource         string    `json:"Resource"`
-	Namespace        string    `json:"Namespace"`
-	User             userInfo  `json:"UserInfo"`
+
+type Activity struct {
+	LastActivityTime CustomTime `json:"LastActivityTime"`
+	Action           string     `json:"Action"`
+	Resource         string     `json:"Resource"`
+	Namespace        string     `json:"Namespace"`
+	User             userInfo   `json:"UserInfo"`
 }
 
-func getActivity(src string) (*activity, error) {
-	activity := &activity{}
+func GetActivity(src string) (*Activity, error) {
+	activity := &Activity{}
 	err := json.Unmarshal([]byte(src), activity)
 	if err != nil {
 		return nil, err
@@ -73,7 +80,7 @@ func getActivity(src string) (*activity, error) {
 	return activity, nil
 }
 
-func (ct *customTime) Time() time.Time {
+func (ct *CustomTime) Time() time.Time {
 	return time.Time(*ct)
 }
 
