@@ -1,0 +1,16 @@
+matchRule:
+  - name: keta-jks1-*
+    labels:
+      kubesphere.io/workspace: ketaops
+  - labels:
+      kubesphere.io/namespace: keta-jks-develop
+  - labels:
+      kubesphere.io/namespace: keta-jks-kubefree
+
+sleepAfterTime: 48h
+deleteAfterTime: 168h
+
+
+
+
+

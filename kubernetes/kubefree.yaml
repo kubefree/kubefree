@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: kubefree
+  name: kubefree
+  namespace: kubefree
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubefree
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: kubefree
+    spec:
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+          key: master
+      containers:
+      - args:
+        - -resyncDuration=10m
+        - -log-level=debug
+        image: docker-hosted.ketaops.cc/xishuhq/kubefree-controller:v0.8
+        imagePullPolicy: Always
+        name: kubefree
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      - args:
+          - -log-level=debug
+        image: docker-hosted.ketaops.cc/xishuhq/kubefree-event:v0.8
+        imagePullPolicy: Always
+        name: event-listen
+        resources: { }
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+          - name: kubefree
+            mountPath: /config.yaml
+            subPath: config.yaml
+
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      serviceAccount: kubefree
+      serviceAccountName: kubefree
+      volumes:
+        - name: kubefree
+          configMap:
+            name: kubefree
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app: kubefree
+  name: kubefree
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: kubefree
+  namespace: kubefree
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: kubefree
+  name: kubefree
+  namespace: kubefree
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app: kubefree
+  name: kubefree
+  namespace: kubefree
+data:
+  config.yaml: |
+    matchRule:
+      # 支持通过namespace名称以及标签匹配
+      - name: keta-jks1-*
+        labels:
+          kubesphere.io/workspace: ketaops
+    sleepAfterTime: 48h
+    deleteAfterTime: 168h
+
+
+
+
+

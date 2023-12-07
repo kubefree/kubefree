@@ -155,7 +155,7 @@ func (c *controller) processItem(key string) error {
 	if err := c.checkNamespace(obj.(*v1.Namespace)); err != nil {
 		logrus.WithError(err).Infof("checkNamespace failed, ns: %s", key)
 
-	    // Do not handle when namespace check fails, instead of exiting the program
+		// Do not handle when namespace check fails, instead of exiting the program
 		return nil
 	}
 
@@ -194,7 +194,7 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 		return nil
 	}
 
-	lastActivityStatus, err := getActivity(ac)
+	lastActivityStatus, err := GetActivity(ac)
 	if err != nil {
 		logrus.WithError(err).Errorln("Error getActivity: %v", ac)
 		return err
@@ -218,9 +218,9 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 }
 
 // target sleep-after rules
-func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity activity) error {
+func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity Activity) error {
 	v, ok := namespace.Labels[c.SleepAfterSelector]
-	if !ok || v == ""{
+	if !ok || v == "" {
 		// namespace doesn't have sleep-after label, do nothing
 		return nil
 	}
@@ -301,7 +301,7 @@ func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 }
 
 // target delete-after rules
-func (c *controller) syncDeleteAfterRules(namespace *v1.Namespace, lastActivity activity) error {
+func (c *controller) syncDeleteAfterRules(namespace *v1.Namespace, lastActivity Activity) error {
 	v, ok := namespace.Labels[c.DeleteAfterSelector]
 	if !ok || v == "" {
 		// namespace doesn't have delete-after label, do nothing
