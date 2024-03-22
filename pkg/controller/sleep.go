@@ -1,4 +1,4 @@
-package plank
+package controller
 
 import (
 	"context"
@@ -89,7 +89,7 @@ func (c *controller) Sleep(ns *v1.Namespace) error {
 	return nil
 }
 
-//TODO: is it necessary to delete legacy replicas annotation?
+// TODO: is it necessary to delete legacy replicas annotation?
 func (c *controller) WakeUp(ns *v1.Namespace) error {
 	// 依次判断deployment、statefulset、deamonset，每个执行以下操作
 	// 	1. 判断是否有legacy replicas，如果没有则报错

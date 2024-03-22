@@ -1,4 +1,4 @@
-package plank
+package controller
 
 import (
 	"context"
@@ -56,12 +56,13 @@ func (ct *customTime) UnmarshalJSON(b []byte) error {
 	*ct = customTime(t.UTC())
 	return nil
 }
+
 type activity struct {
 	LastActivityTime customTime `json:"LastActivityTime"`
-	Action           string    `json:"Action"`
-	Resource         string    `json:"Resource"`
-	Namespace        string    `json:"Namespace"`
-	User             userInfo  `json:"UserInfo"`
+	Action           string     `json:"Action"`
+	Resource         string     `json:"Resource"`
+	Namespace        string     `json:"Namespace"`
+	User             userInfo   `json:"UserInfo"`
 }
 
 func getActivity(src string) (*activity, error) {
