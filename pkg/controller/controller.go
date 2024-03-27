@@ -160,7 +160,18 @@ func (c *controller) processItem(key string) error {
 			return nil
 		}
 	case *appsv1.Deployment:
+		// no need to handle the deployment if it's not active
+		if err := c.checkDeployment(v); err != nil {
+			logrus.WithError(err).Infof("checkDeployment failed, deployment: %s", key)
+			return nil
+		}
 	case *v1.Service:
+		if err := c.checkService(v); err != nil {
+			logrus.WithError(err).Infof("checkService failed, service: %s", key)
+			return nil
+		}
+	default:
+		logrus.Infof("unknown object type: %T", v)
 	}
 
 	return nil
@@ -191,36 +202,6 @@ func (c *controller) handleErr(err error, key interface{}) {
 	klog.Infof("Dropping namespace %q out of the queue: %v", key, err)
 }
 
-func (c *controller) checkNamespace(ns *v1.Namespace) error {
-	ac, ok := ns.Annotations[c.ActivityStatusAnnotation]
-	if !ok || ac == "" {
-		// activity status not exists, do nothing
-		return nil
-	}
-
-	lastActivityStatus, err := getActivity(ac)
-	if err != nil {
-		logrus.WithError(err).Errorf("Error getActivity: %v", ac)
-		return err
-	}
-
-	logrus.Debugf("pick namespace %s", ns.Name)
-
-	// check delete-after-seconds rules
-	if err = c.syncDeleteAfterRules(ns, *lastActivityStatus); err != nil {
-		logrus.WithError(err).Errorln("Error SyncDeleteAfterRules")
-		return err
-	}
-
-	// check sleep-after rules
-	if err = c.syncSleepAfterRules(ns, *lastActivityStatus); err != nil {
-		logrus.WithError(err).Errorln("Error SyncSleepAfterRules")
-		return err
-	}
-
-	return nil
-}
-
 // target sleep-after rules
 func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity activity) error {
 	v, ok := namespace.Labels[c.SleepAfterSelector]
@@ -228,7 +209,6 @@ func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity a
 		// namespace doesn't have sleep-after label, do nothing
 		return nil
 	}
-	logrus.WithField("namespace", namespace.Name).WithField("sleep-after", v).Debug("check it's sleep-after rule")
 
 	thresholdDuration, err := time.ParseDuration(v)
 	if err != nil {
@@ -311,7 +291,6 @@ func (c *controller) syncDeleteAfterRules(namespace *v1.Namespace, lastActivity 
 		// namespace doesn't have delete-after label, do nothing
 		return nil
 	}
-	logrus.WithField("namespace", namespace.Name).WithField("delete-after", v).Debug("check it's delete-after rule")
 
 	thresholdDuration, err := time.ParseDuration(v)
 	if err != nil {

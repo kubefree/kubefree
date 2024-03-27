@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sirupsen/logrus"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,6 +31,34 @@ const (
 	SLEEP    string = "sleep"
 	DELETING string = "deleting"
 )
+
+func (c *controller) checkNamespace(ns *v1.Namespace) error {
+	ac, ok := ns.Annotations[c.ActivityStatusAnnotation]
+	if !ok || ac == "" {
+		// activity status not exists, do nothing
+		return nil
+	}
+
+	lastActivityStatus, err := getActivity(ac)
+	if err != nil {
+		logrus.WithError(err).Errorf("Error getActivity: %v", ac)
+		return err
+	}
+
+	// check delete-after-seconds rules
+	if err = c.syncDeleteAfterRules(ns, *lastActivityStatus); err != nil {
+		logrus.WithError(err).Errorln("Error SyncDeleteAfterRules")
+		return err
+	}
+
+	// check sleep-after rules
+	if err = c.syncSleepAfterRules(ns, *lastActivityStatus); err != nil {
+		logrus.WithError(err).Errorln("Error SyncSleepAfterRules")
+		return err
+	}
+
+	return nil
+}
 
 type userInfo struct {
 	Name        string `json:"Name"`
@@ -76,10 +105,6 @@ func getActivity(src string) (*activity, error) {
 
 func (ct *customTime) Time() time.Time {
 	return time.Time(*ct)
-}
-
-func (c *controller) validDeploymentAnnotation(d *apps.Deployment, annotation, value string) (*apps.Deployment, error) {
-	return nil, nil
 }
 
 func (c *controller) patchDeploymentWithAnnotation(d *apps.Deployment, annotation, value string) (*apps.Deployment, error) {
