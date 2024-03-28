@@ -1,4 +1,4 @@
-package plank
+package controller
 
 import (
 	"context"
@@ -7,15 +7,16 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/apimachinery/pkg/util/wait"
 	cacheddiscovery "k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/scale"
@@ -28,9 +29,11 @@ type controller struct {
 	clientset    *kubernetes.Clientset
 	scalesGetter scale.ScalesGetter
 
-	indexer  cache.Indexer
-	informer cache.Controller
-	queue    workqueue.RateLimitingInterface
+	queue workqueue.RateLimitingInterface
+
+	deploymentInformer cache.SharedIndexInformer
+	serviceInformer    cache.SharedIndexInformer
+	namespaceInformer  cache.SharedIndexInformer
 
 	DeleteAfterSelector      string
 	SleepAfterSelector       string
@@ -46,47 +49,66 @@ func NewController(clientset *kubernetes.Clientset, resyncDuration time.Duration
 	scaleKindResolver := scale.NewDiscoveryScaleKindResolver(clientset.DiscoveryClient)
 	scaler := scale.New(clientset.RESTClient(), mapper, dynamic.LegacyAPIPathResolverFunc, scaleKindResolver)
 
-	sleepNamespaceListWatcher := cache.NewListWatchFromClient(clientset.CoreV1().RESTClient(), "namespaces", v1.NamespaceAll, fields.Everything())
-	// create the workqueue
+	// sleepNamespaceListWatcher := cache.NewListWatchFromClient(clientset.CoreV1().RESTClient(), "namespaces", v1.NamespaceAll, fields.Everything())
+
+	factory := informers.NewSharedInformerFactory(clientset, resyncDuration)
+
 	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
-	// Bind the workqueue to a cache with the help of an informer. This way we make sure that
-	// whenever the cache is updated, the pod key is added to the workqueue.
-	// Note that when we finally process the item from the workqueue, we might see a newer version
-	// of the Pod than the version which was responsible for triggering the update.
-	indexer, informer := cache.NewIndexerInformer(sleepNamespaceListWatcher, &v1.Namespace{}, resyncDuration, cache.ResourceEventHandlerFuncs{
+
+	namespaceInformer := factory.Core().V1().Namespaces().Informer()
+	deploymentInformer := factory.Apps().V1().Deployments().Informer()
+	serviceInformer := factory.Core().V1().Services().Informer()
+
+	namespaceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			key, err := cache.MetaNamespaceKeyFunc(obj)
-			if err == nil {
-				queue.Add(key)
-			}
+			queue.Add(obj.(*v1.Namespace))
 		},
-		UpdateFunc: func(old interface{}, new interface{}) {
-			key, err := cache.MetaNamespaceKeyFunc(new)
-			if err == nil {
-				queue.Add(key)
-			}
+		UpdateFunc: func(old, new interface{}) {
+			queue.Add(new.(*v1.Namespace))
 		},
 		DeleteFunc: func(obj interface{}) {
-			// IndexerInformer uses a delta queue, therefore for deletes we have to use this
-			// key function.
-			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-			if err == nil {
-				// no need to handle this object again
-				queue.Forget(key)
-			}
+			queue.Forget(obj.(*v1.Namespace))
 		},
-	}, cache.Indexers{})
+	})
+
+	deploymentInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			queue.Add(obj.(*appsv1.Deployment))
+		},
+		UpdateFunc: func(old, new interface{}) {
+			queue.Add(new.(*appsv1.Deployment))
+		},
+		DeleteFunc: func(obj interface{}) {
+			queue.Forget(obj.(*appsv1.Deployment))
+		},
+	})
+
+	serviceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			queue.Add(obj.(*v1.Service))
+		},
+		UpdateFunc: func(old, new interface{}) {
+			queue.Add(new.(*v1.Service))
+		},
+		DeleteFunc: func(obj interface{}) {
+			queue.Forget(obj.(*v1.Service))
+		},
+	})
+
+	go factory.Start(wait.NeverStop)
 
 	return &controller{
 		clientset:                clientset,
 		scalesGetter:             scaler,
-		indexer:                  indexer,
-		informer:                 informer,
 		queue:                    queue,
 		DeleteAfterSelector:      DeleteAfterLabel,
 		SleepAfterSelector:       SleepAfterLabel,
 		ActivityStatusAnnotation: NamespaceActivityStatusAnnotation,
 		ExecutionStateSelector:   ExecutionStateLabel,
+
+		namespaceInformer:  namespaceInformer,
+		deploymentInformer: deploymentInformer,
+		serviceInformer:    serviceInformer,
 	}, nil
 }
 
@@ -97,9 +119,7 @@ func (c *controller) Run(workers int, stopCh chan struct{}) {
 	defer c.queue.ShutDown()
 	klog.Info("starting kubefree controller")
 
-	go c.informer.Run(stopCh)
-
-	if !cache.WaitForCacheSync(stopCh, c.informer.HasSynced) {
+	if !cache.WaitForCacheSync(stopCh, c.namespaceInformer.HasSynced, c.deploymentInformer.HasSynced, c.serviceInformer.HasSynced) {
 		runtime.HandleError(fmt.Errorf("%s", "Time out waitting for cache synced"))
 		return
 	}
@@ -129,34 +149,40 @@ func (c *controller) processNextItem() bool {
 	// parallel.
 	defer c.queue.Done(key)
 
-	err := c.processItem(key.(string))
+	err := c.processItem(key)
 	c.handleErr(err, key)
 
 	return true
 }
 
-func (c *controller) processItem(key string) error {
-	obj, exists, err := c.indexer.GetByKey(key)
-	if err != nil {
-		logrus.WithError(err).Infof("Fetching object with key %v from store failed", key)
-		return err
-	}
-
-	if !exists {
-		return nil
-	}
-
-	// no need to handle namespace in terminating state
-	ns := obj.(*v1.Namespace)
-	if ns.Status.Phase != v1.NamespaceActive {
-		return nil
-	}
-
-	if err := c.checkNamespace(obj.(*v1.Namespace)); err != nil {
-		logrus.WithError(err).Infof("checkNamespace failed, ns: %s", key)
-
-	    // Do not handle when namespace check fails, instead of exiting the program
-		return nil
+func (c *controller) processItem(obj interface{}) error {
+	switch v := obj.(type) {
+	case *v1.Namespace:
+		// logrus.Debugf("Namespace processItem: %s", v.Name)
+		// no need to handle the namespace if it's not active
+		if v.Status.Phase != v1.NamespaceActive {
+			return nil
+		}
+		if err := c.checkNamespace(v); err != nil {
+			logrus.WithError(err).Infof("checkNamespace failed, ns: %s", v.Name)
+			// Do not handle when namespace check fails, instead of exiting the program
+			return nil
+		}
+	case *appsv1.Deployment:
+		// logrus.Debugf("deployment processItem: %s", v.Name)
+		// no need to handle the deployment if it's not active
+		if err := c.checkDeployment(v); err != nil {
+			logrus.WithError(err).Infof("checkDeployment failed, deployment: %s", v.Name)
+			return nil
+		}
+	case *v1.Service:
+		// logrus.Debugf("service processItem: %s", v.Name)
+		if err := c.checkService(v); err != nil {
+			logrus.WithError(err).Infof("checkService failed, service: %s", v.Name)
+			return nil
+		}
+	default:
+		logrus.Infof("unknown object type: %T", v)
 	}
 
 	return nil
@@ -187,44 +213,13 @@ func (c *controller) handleErr(err error, key interface{}) {
 	klog.Infof("Dropping namespace %q out of the queue: %v", key, err)
 }
 
-func (c *controller) checkNamespace(ns *v1.Namespace) error {
-	ac, ok := ns.Annotations[c.ActivityStatusAnnotation]
-	if !ok || ac == "" {
-		// activity status not exists, do nothing
-		return nil
-	}
-
-	lastActivityStatus, err := getActivity(ac)
-	if err != nil {
-		logrus.WithError(err).Errorln("Error getActivity: %v", ac)
-		return err
-	}
-
-	logrus.Debugf("pick namespace %s", ns.Name)
-
-	// check delete-after-seconds rules
-	if err = c.syncDeleteAfterRules(ns, *lastActivityStatus); err != nil {
-		logrus.WithError(err).Errorln("Error SyncDeleteAfterRules")
-		return err
-	}
-
-	// check sleep-after rules
-	if err = c.syncSleepAfterRules(ns, *lastActivityStatus); err != nil {
-		logrus.WithError(err).Errorln("Error SyncSleepAfterRules")
-		return err
-	}
-
-	return nil
-}
-
 // target sleep-after rules
 func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity activity) error {
 	v, ok := namespace.Labels[c.SleepAfterSelector]
-	if !ok || v == ""{
+	if !ok || v == "" {
 		// namespace doesn't have sleep-after label, do nothing
 		return nil
 	}
-	logrus.WithField("namespace", namespace.Name).WithField("sleep-after", v).Debug("check it's sleep-after rule")
 
 	thresholdDuration, err := time.ParseDuration(v)
 	if err != nil {
@@ -307,7 +302,6 @@ func (c *controller) syncDeleteAfterRules(namespace *v1.Namespace, lastActivity 
 		// namespace doesn't have delete-after label, do nothing
 		return nil
 	}
-	logrus.WithField("namespace", namespace.Name).WithField("delete-after", v).Debug("check it's delete-after rule")
 
 	thresholdDuration, err := time.ParseDuration(v)
 	if err != nil {
