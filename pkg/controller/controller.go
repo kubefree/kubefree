@@ -49,12 +49,8 @@ func NewController(clientset *kubernetes.Clientset, resyncDuration time.Duration
 	scaleKindResolver := scale.NewDiscoveryScaleKindResolver(clientset.DiscoveryClient)
 	scaler := scale.New(clientset.RESTClient(), mapper, dynamic.LegacyAPIPathResolverFunc, scaleKindResolver)
 
-	// sleepNamespaceListWatcher := cache.NewListWatchFromClient(clientset.CoreV1().RESTClient(), "namespaces", v1.NamespaceAll, fields.Everything())
-
 	factory := informers.NewSharedInformerFactory(clientset, resyncDuration)
-
 	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
-
 	namespaceInformer := factory.Core().V1().Namespaces().Informer()
 	deploymentInformer := factory.Apps().V1().Deployments().Informer()
 	serviceInformer := factory.Core().V1().Services().Informer()
@@ -120,7 +116,7 @@ func (c *controller) Run(workers int, stopCh chan struct{}) {
 	klog.Info("starting kubefree controller")
 
 	if !cache.WaitForCacheSync(stopCh, c.namespaceInformer.HasSynced, c.deploymentInformer.HasSynced, c.serviceInformer.HasSynced) {
-		runtime.HandleError(fmt.Errorf("%s", "Time out waitting for cache synced"))
+		runtime.HandleError(fmt.Errorf("%s", "Time out waiting for cache synced"))
 		return
 	}
 
