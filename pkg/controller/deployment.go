@@ -52,12 +52,12 @@ func (dc *deploymentController) syncDeleteAfterRules(deployment *appsv1.Deployme
 		return nil
 	}
 
-	nl := logrus.WithField("namespace", deployment.Namespace).
+	lg := logrus.WithField("namespace", deployment.Namespace).
 		WithField("deployment", deployment.Name).
 		WithField("lastActivityTime", lastActivity.LastActivityTime).
 		WithField("delete-after", v)
 
-	nl.Debug("checking delete-after rules")
+	lg.Debug("checking delete-after rules")
 
 	thresholdDuration, err := time.ParseDuration(v)
 	if err != nil {
@@ -67,10 +67,10 @@ func (dc *deploymentController) syncDeleteAfterRules(deployment *appsv1.Deployme
 	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration {
 		if !dc.DryRun {
 			if err != dc.clientset.AppsV1().Deployments(deployment.Namespace).Delete(context.Background(), deployment.Name, metav1.DeleteOptions{}) {
-				nl.WithError(err).Errorln("Error delete deployment")
+				lg.WithError(err).Errorln("Error delete deployment")
 				return err
 			}
-			nl.Info("delete deployment successfully")
+			lg.Info("delete deployment successfully")
 		}
 	}
 	return nil
@@ -83,12 +83,12 @@ func (dc *deploymentController) syncSleepAfterRules(deployment *appsv1.Deploymen
 		return nil
 	}
 
-	nl := logrus.WithField("namespace", deployment.Namespace).
+	lg := logrus.WithField("namespace", deployment.Namespace).
 		WithField("deployment", deployment.Name).
 		WithField("lastActivityTime", lastActivity.LastActivityTime).
 		WithField("sleep-after", v)
 
-	nl.Debug("checking sleep-after rules")
+	lg.Debug("checking sleep-after rules")
 
 	_, err := time.ParseDuration(v)
 	if err != nil {
