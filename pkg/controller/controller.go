@@ -1,18 +1,13 @@
 package controller
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/sirupsen/logrus"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/apimachinery/pkg/util/wait"
 	cacheddiscovery "k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
@@ -195,37 +190,4 @@ func (c *controller) handleErr(err error, key interface{}) {
 	// Report to an external entity that, even after several retries, we could not successfully process this key
 	runtime.HandleError(err)
 	logrus.Errorf("failed to handle %v, err: %v, dropping this key from the queue", key, err)
-}
-
-func (c *controller) setKubefreeExecutionState(namespace *v1.Namespace, state string) (*v1.Namespace, error) {
-	ns, err := c.clientset.CoreV1().Namespaces().Get(context.TODO(), namespace.Name, metav1.GetOptions{})
-	if err != nil {
-		return nil, err
-	}
-
-	oldNsData, err := json.Marshal(ns)
-	if err != nil {
-		return nil, err
-	}
-
-	if ns.Labels == nil {
-		ns.Labels = make(map[string]string)
-	}
-	ns.Labels[c.ExecutionStateSelector] = state
-	newNsData, err := json.Marshal(ns)
-	if err != nil {
-		return nil, err
-	}
-
-	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldNsData, newNsData, &v1.Namespace{})
-	if err != nil {
-		return nil, err
-	}
-
-	result, err := c.clientset.CoreV1().Namespaces().Patch(context.TODO(), namespace.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
-	if err != nil {
-		logrus.Errorf("failed to patch annotation for namespace, namespace: %v , err: %v", namespace.Name, err)
-		return nil, err
-	}
-	return result, nil
 }
