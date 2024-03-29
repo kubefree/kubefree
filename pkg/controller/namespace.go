@@ -419,3 +419,36 @@ func (c *namespaceController) syncSleepAfterRules(namespace *v1.Namespace, lastA
 	}
 	return nil
 }
+
+func (c *namespaceController) setKubefreeExecutionState(namespace *v1.Namespace, state string) (*v1.Namespace, error) {
+	ns, err := c.clientset.CoreV1().Namespaces().Get(context.TODO(), namespace.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	oldNsData, err := json.Marshal(ns)
+	if err != nil {
+		return nil, err
+	}
+
+	if ns.Labels == nil {
+		ns.Labels = make(map[string]string)
+	}
+	ns.Labels[c.ExecutionStateSelector] = state
+	newNsData, err := json.Marshal(ns)
+	if err != nil {
+		return nil, err
+	}
+
+	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldNsData, newNsData, &v1.Namespace{})
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := c.clientset.CoreV1().Namespaces().Patch(context.TODO(), namespace.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+	if err != nil {
+		logrus.Errorf("failed to patch annotation for namespace, namespace: %v , err: %v", namespace.Name, err)
+		return nil, err
+	}
+	return result, nil
+}
