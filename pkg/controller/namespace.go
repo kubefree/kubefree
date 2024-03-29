@@ -12,7 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -26,6 +25,7 @@ const (
 
 // execution state of namespace controlled by kubefree
 const (
+	//
 	NORMAL   string = "normal"
 	SLEEPING string = "sleeping"
 	SLEEP    string = "sleep"
@@ -354,31 +354,24 @@ func (c *namespaceController) syncSleepAfterRules(namespace *v1.Namespace, lastA
 		return fmt.Errorf("time.ParseDuration failed, label %s, value %s", c.SleepAfterSelector, v)
 	}
 
+	lg := logrus.WithField("namespace", namespace.Name).
+		WithField("lastActivityTime", lastActivity.LastActivityTime).
+		WithField("sleep-after", v)
+
 	state := namespace.Labels[c.ExecutionStateSelector]
 	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration {
 		switch state {
 		case DELETING:
 			// do nothing
-			// TODO: how to deal it if namespace hangs?
 		case SLEEP, SLEEPING:
-			// 当存在delete标签时不走此处的删除逻辑
-			v, ok := namespace.Labels[c.DeleteAfterSelector]
-			if ok && v != "" {
-				logrus.WithField("namespace", namespace.Name).WithField("delete-after", v).Debug("skip delete namespace")
-				return nil
-			}
-			// delete namespace if the namespace still in inactivity status
-			// after thresholdDuration * 2 time
+			// delete namespace if the namespace still in inactivity status after thresholdDuration * 2 time
 			if namespace.Status.Phase != v1.NamespaceTerminating && time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration*2 {
-				logrus.WithField("namespace", namespace.Name).
-					WithField("lastActivityTime", lastActivity.LastActivityTime).
-					WithField("sleep-after", v).Info("delete inactivity namespace")
 				if !c.DryRun {
-					err = c.clientset.CoreV1().Namespaces().Delete(context.TODO(), namespace.Name, metav1.DeleteOptions{})
-					if err != nil {
-						logrus.WithField("namespace", namespace.Name).Error("Error delete namespace")
+					if err := c.clientset.CoreV1().Namespaces().Delete(context.TODO(), namespace.Name, metav1.DeleteOptions{}); err != nil {
+						lg.WithError(err).Error("Error delete namespace")
 						return err
 					}
+					lg.Infoln("delete inactivity namespace successfully")
 				}
 			}
 		default:
@@ -388,34 +381,38 @@ func (c *namespaceController) syncSleepAfterRules(namespace *v1.Namespace, lastA
 				step2: sleep namespace
 				step3: update execution state with sleep
 			*/
-			logrus.WithField("namespace", namespace.Name).
-				WithField("lastActivityTime", lastActivity.LastActivityTime).
-				WithField("sleep-after", v).Info("sleep inactivity namespace")
+			lg.Info("try to sleep inactivity namespace")
 			if _, err := c.setKubefreeExecutionState(namespace, SLEEPING); err != nil {
-				logrus.WithField("namespace", namespace.Name).WithError(err).Fatal("failed to SetKubefreeExecutionState")
+				lg.WithError(err).Errorln("failed to SetKubefreeExecutionState")
+				return err
 			}
 			if !c.DryRun {
 				if err := c.Sleep(namespace); err != nil {
-					logrus.WithField("namespace", namespace.Name).WithError(err).Fatal("failed to sleep namespace")
+					lg.WithError(err).Errorln("failed to sleep namespace")
+					return err
 				}
 			}
 			if _, err := c.setKubefreeExecutionState(namespace, SLEEP); err != nil {
-				logrus.WithField("namespace", namespace.Name).WithError(err).Fatal("failed to SetKubefreeExecutionState")
+				lg.WithError(err).Errorln("failed to SetKubefreeExecutionState")
+				return err
 			}
+			lg.Infoln("sleep inactivity namespace successfully")
 		}
 	} else {
 		switch state {
 		case SLEEPING, SLEEP:
-			klog.Infof("wake up namespace %s", namespace.Name)
+			lg.Infof("try to wake up namespace %s", namespace.Name)
 			if !c.DryRun {
 				if err := c.WakeUp(namespace); err != nil {
-					logrus.WithField("namespace", namespace.Name).WithError(err).Errorln("failed to wake up namespace")
+					lg.WithError(err).Errorln("failed to wake up namespace")
+					return err
 				}
 			}
 
 			if _, err := c.setKubefreeExecutionState(namespace, NORMAL); err != nil {
-				logrus.WithField("namespace", namespace.Name).WithError(err).Errorln("failed to SetKubefreeExecutionState")
+				lg.WithError(err).Errorln("failed to SetKubefreeExecutionState")
 			}
+			lg.Infoln("wake up namespace successfully")
 		default:
 			// still in activity time scope,so do nothing
 		}
