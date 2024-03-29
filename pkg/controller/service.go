@@ -22,7 +22,7 @@ func (c *controller) checkService(service *v1.Service) error {
 		return err
 	}
 
-	logrus.Debugf("pick service %s, last activity %v", service.Name, activity)
+	logrus.Debugf("pick service %s, last activity %v", service.Name, activity.LastActivityTime)
 
 	s := &serviceController{controller: *c}
 

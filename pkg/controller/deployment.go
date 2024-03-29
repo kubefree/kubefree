@@ -67,7 +67,7 @@ func (dc *deploymentController) syncDeleteAfterRules(deployment *appsv1.Deployme
 	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration {
 		if !dc.DryRun {
 			if err != dc.clientset.AppsV1().Deployments(deployment.Namespace).Delete(context.Background(), deployment.Name, metav1.DeleteOptions{}) {
-				nl.Error("Error delete namespace")
+				nl.WithError(err).Errorln("Error delete deployment")
 				return err
 			}
 			nl.Info("delete deployment successfully")

@@ -22,7 +22,6 @@ import (
 	"k8s.io/client-go/scale"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
-	"k8s.io/klog/v2"
 )
 
 type controller struct {
@@ -94,26 +93,24 @@ func NewController(clientset *kubernetes.Clientset, resyncDuration time.Duration
 	go factory.Start(wait.NeverStop)
 
 	return &controller{
-		clientset:                clientset,
-		scalesGetter:             scaler,
-		queue:                    queue,
-		DeleteAfterSelector:      DeleteAfterLabel,
-		SleepAfterSelector:       SleepAfterLabel,
-		ActivityStatusAnnotation: NamespaceActivityStatusAnnotation,
-		ExecutionStateSelector:   ExecutionStateLabel,
+		clientset:    clientset,
+		scalesGetter: scaler,
+		queue:        queue,
 
 		namespaceInformer:  namespaceInformer,
 		deploymentInformer: deploymentInformer,
 		serviceInformer:    serviceInformer,
+
+		DeleteAfterSelector:      DeleteAfterLabel,
+		SleepAfterSelector:       SleepAfterLabel,
+		ActivityStatusAnnotation: NamespaceActivityStatusAnnotation,
+		ExecutionStateSelector:   ExecutionStateLabel,
 	}, nil
 }
 
 func (c *controller) Run(workers int, stopCh chan struct{}) {
 	defer runtime.HandleCrash()
-
-	// Let the workers stop when we are done
 	defer c.queue.ShutDown()
-	klog.Info("starting kubefree controller")
 
 	if !cache.WaitForCacheSync(stopCh, c.namespaceInformer.HasSynced, c.deploymentInformer.HasSynced, c.serviceInformer.HasSynced) {
 		runtime.HandleError(fmt.Errorf("%s", "Time out waiting for cache synced"))
@@ -125,7 +122,6 @@ func (c *controller) Run(workers int, stopCh chan struct{}) {
 	}
 
 	<-stopCh
-	klog.Info("Stopping kubefree controller")
 }
 
 func (c *controller) runWorker() {
@@ -134,15 +130,10 @@ func (c *controller) runWorker() {
 }
 
 func (c *controller) processNextItem() bool {
-	// Wait until there is a new item in the working queue
 	key, quit := c.queue.Get()
 	if quit {
 		return false
 	}
-
-	// Tell the queue that we are done with processing this key. This unblocks the key for other workers
-	// This allows safe parallel processing because two pods with the same key are never processed in
-	// parallel.
 	defer c.queue.Done(key)
 
 	err := c.processItem(key)
@@ -160,22 +151,19 @@ func (c *controller) processItem(obj interface{}) error {
 			return nil
 		}
 		if err := c.checkNamespace(v); err != nil {
-			logrus.WithError(err).Infof("checkNamespace failed, ns: %s", v.Name)
-			// Do not handle when namespace check fails, instead of exiting the program
-			return nil
+			logrus.WithError(err).Warnf("checkNamespace failed, ns: %s", v.Name)
+			return err
 		}
 	case *appsv1.Deployment:
-		// logrus.Debugf("deployment processItem: %s", v.Name)
-		// no need to handle the deployment if it's not active
 		if err := c.checkDeployment(v); err != nil {
-			logrus.WithError(err).Infof("checkDeployment failed, deployment: %s", v.Name)
-			return nil
+			logrus.WithError(err).Warnf("checkDeployment failed, deployment: %s", v.Name)
+			return err
 		}
 	case *v1.Service:
 		// logrus.Debugf("service processItem: %s", v.Name)
 		if err := c.checkService(v); err != nil {
-			logrus.WithError(err).Infof("checkService failed, service: %s", v.Name)
-			return nil
+			logrus.WithError(err).Warnf("checkService failed, service: %s", v.Name)
+			return err
 		}
 	default:
 		logrus.Infof("unknown object type: %T", v)
@@ -195,7 +183,7 @@ func (c *controller) handleErr(err error, key interface{}) {
 
 	// This controller retries 5 times if something goes wrong. After that, it stops trying.
 	if c.queue.NumRequeues(key) < 5 {
-		klog.Infof("Error syncing namespace %v: %v", key, err)
+		logrus.Infof("Error syncing %v: %v", key, err)
 
 		// Re-enqueue the key rate limited. Based on the rate limiter on the
 		// queue and the re-enqueue history, the key will be processed later again.
@@ -206,117 +194,7 @@ func (c *controller) handleErr(err error, key interface{}) {
 	c.queue.Forget(key)
 	// Report to an external entity that, even after several retries, we could not successfully process this key
 	runtime.HandleError(err)
-	klog.Infof("Dropping namespace %q out of the queue: %v", key, err)
-}
-
-// target sleep-after rules
-func (c *controller) syncSleepAfterRules(namespace *v1.Namespace, lastActivity activity) error {
-	v, ok := namespace.Labels[c.SleepAfterSelector]
-	if !ok || v == "" {
-		// namespace doesn't have sleep-after label, do nothing
-		return nil
-	}
-
-	thresholdDuration, err := time.ParseDuration(v)
-	if err != nil {
-		return fmt.Errorf("time.ParseDuration failed, label %s, value %s", c.SleepAfterSelector, v)
-	}
-
-	state := namespace.Labels[c.ExecutionStateSelector]
-	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration {
-		switch state {
-		case DELETING:
-			// do nothing
-			// TODO: how to deal it if namespace hangs?
-		case SLEEP, SLEEPING:
-			// 当存在delete标签时不走此处的删除逻辑
-			v, ok := namespace.Labels[c.DeleteAfterSelector]
-			if ok && v != "" {
-				logrus.WithField("namespace", namespace.Name).WithField("delete-after", v).Debug("skip delete namespace")
-				return nil
-			}
-			// delete namespace if the namespace still in inactivity status
-			// after thresholdDuration * 2 time
-			if namespace.Status.Phase != v1.NamespaceTerminating && time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration*2 {
-				logrus.WithField("namespace", namespace.Name).
-					WithField("lastActivityTime", lastActivity.LastActivityTime).
-					WithField("sleep-after", v).Info("delete inactivity namespace")
-				if !c.DryRun {
-					err = c.clientset.CoreV1().Namespaces().Delete(context.TODO(), namespace.Name, metav1.DeleteOptions{})
-					if err != nil {
-						logrus.WithField("namespace", namespace.Name).Error("Error delete namespace")
-						return err
-					}
-				}
-			}
-		default:
-			/*
-				Enter into sleep mode
-				step1: update execution state with sleeping
-				step2: sleep namespace
-				step3: update execution state with sleep
-			*/
-			logrus.WithField("namespace", namespace.Name).
-				WithField("lastActivityTime", lastActivity.LastActivityTime).
-				WithField("sleep-after", v).Info("sleep inactivity namespace")
-			if _, err := c.setKubefreeExecutionState(namespace, SLEEPING); err != nil {
-				logrus.WithField("namespace", namespace.Name).WithError(err).Fatal("failed to SetKubefreeExecutionState")
-			}
-			if !c.DryRun {
-				if err := c.Sleep(namespace); err != nil {
-					logrus.WithField("namespace", namespace.Name).WithError(err).Fatal("failed to sleep namespace")
-				}
-			}
-			if _, err := c.setKubefreeExecutionState(namespace, SLEEP); err != nil {
-				logrus.WithField("namespace", namespace.Name).WithError(err).Fatal("failed to SetKubefreeExecutionState")
-			}
-		}
-	} else {
-		switch state {
-		case SLEEPING, SLEEP:
-			klog.Infof("wake up namespace %s", namespace.Name)
-			if !c.DryRun {
-				if err := c.WakeUp(namespace); err != nil {
-					logrus.WithField("namespace", namespace.Name).WithError(err).Errorln("failed to wake up namespace")
-				}
-			}
-
-			if _, err := c.setKubefreeExecutionState(namespace, NORMAL); err != nil {
-				logrus.WithField("namespace", namespace.Name).WithError(err).Errorln("failed to SetKubefreeExecutionState")
-			}
-		default:
-			// still in activity time scope,so do nothing
-		}
-	}
-	return nil
-}
-
-// target delete-after rules
-func (c *controller) syncDeleteAfterRules(namespace *v1.Namespace, lastActivity activity) error {
-	v, ok := namespace.Labels[c.DeleteAfterSelector]
-	if !ok || v == "" {
-		// namespace doesn't have delete-after label, do nothing
-		return nil
-	}
-
-	thresholdDuration, err := time.ParseDuration(v)
-	if err != nil {
-		return fmt.Errorf("time.ParseDuration failed, label %s, value %s", c.DeleteAfterSelector, v)
-	}
-
-	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration && namespace.Status.Phase != v1.NamespaceTerminating {
-		// Delete the namespace
-		logrus.WithField("namespace", namespace.Name).
-			WithField("lastActivityTime", lastActivity.LastActivityTime).
-			WithField("delete-after", v).Info("deleting inactivity namespace")
-		if !c.DryRun {
-			if err != c.clientset.CoreV1().Namespaces().Delete(context.Background(), namespace.Name, metav1.DeleteOptions{}) {
-				logrus.WithField("namespace", namespace.Name).Error("Error delete namespace")
-				return err
-			}
-		}
-	}
-	return nil
+	logrus.Errorf("failed to handle %v, err: %v, dropping this key from the queue", key, err)
 }
 
 func (c *controller) setKubefreeExecutionState(namespace *v1.Namespace, state string) (*v1.Namespace, error) {
@@ -346,7 +224,7 @@ func (c *controller) setKubefreeExecutionState(namespace *v1.Namespace, state st
 
 	result, err := c.clientset.CoreV1().Namespaces().Patch(context.TODO(), namespace.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
-		klog.V(2).InfoS("failed to patch annotation for namespace", "namespace", namespace.Name, "err", err)
+		logrus.Errorf("failed to patch annotation for namespace, namespace: %v , err: %v", namespace.Name, err)
 		return nil, err
 	}
 	return result, nil
