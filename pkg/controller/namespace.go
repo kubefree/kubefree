@@ -45,14 +45,16 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 		return err
 	}
 
+	nc := namespaceController{controller: *c}
+
 	// check delete-after-seconds rules
-	if err = c.syncDeleteAfterRules(ns, *lastActivityStatus); err != nil {
+	if err = nc.syncDeleteAfterRules(ns, *lastActivityStatus); err != nil {
 		logrus.WithError(err).Errorln("Error SyncDeleteAfterRules")
 		return err
 	}
 
 	// check sleep-after rules
-	if err = c.syncSleepAfterRules(ns, *lastActivityStatus); err != nil {
+	if err = nc.syncSleepAfterRules(ns, *lastActivityStatus); err != nil {
 		logrus.WithError(err).Errorln("Error SyncSleepAfterRules")
 		return err
 	}
@@ -63,20 +65,18 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 type userInfo struct {
 	Name        string `json:"Name"`
 	Impersonate string `json:"Impersonate"`
-	RancherName string `json:"RancherName, omitempty"`
+	RancherName string `json:"RancherName,omitempty"`
 }
 
 type customTime time.Time
 
 func (ct *customTime) UnmarshalJSON(b []byte) error {
-	// 尝试解析带时区偏移量的格式
 	t, err := time.Parse(`"2006-01-02T15:04:05Z07:00"`, string(b))
 	if err == nil {
 		*ct = customTime(t)
 		return nil
 	}
 
-	// 尝试解析不带时区偏移量的格式
 	t, err = time.Parse(`"2006-01-02T15:04:05"`, string(b))
 	if err != nil {
 		return err
@@ -86,12 +86,20 @@ func (ct *customTime) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+func (ct customTime) String() string {
+	return time.Time(ct).String()
+}
+
 type activity struct {
 	LastActivityTime customTime `json:"LastActivityTime"`
 	Action           string     `json:"Action"`
 	Resource         string     `json:"Resource"`
 	Namespace        string     `json:"Namespace"`
 	User             userInfo   `json:"UserInfo"`
+}
+
+func (a activity) String() string {
+	return fmt.Sprintf("LastActivityTime: %v, Action: %v, Resource: %v, Namespace: %v, UserInfo: %v", a.LastActivityTime, a.Action, a.Resource, a.Namespace, a.User)
 }
 
 func getActivity(src string) (*activity, error) {
@@ -134,7 +142,7 @@ func (c *controller) patchDeploymentWithAnnotation(d *apps.Deployment, annotatio
 
 	result, err := c.clientset.AppsV1().Deployments(d.Namespace).Patch(context.TODO(), d.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
-		klog.V(2).InfoS("failed to patch annotation for deployment", "deployment", d.Name, "err", err)
+		logrus.Errorf("failed to patch annotation for deployment, deployment: %v, err: %v ", d.Name, err)
 		return nil, err
 	}
 	return result, nil
@@ -168,7 +176,7 @@ func (c *controller) patchStatefulsetWithAnnotation(s *apps.StatefulSet, annotat
 
 	result, err := c.clientset.AppsV1().StatefulSets(s.Namespace).Patch(context.TODO(), s.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
-		klog.V(2).InfoS("failed to patch annotation for statefulset", "statefulset", s.Name, "err", err)
+		logrus.Errorf("failed to patch annotation for statefulset, statefulset: %v, err: %v ", s.Name, err)
 		return nil, err
 	}
 	return result, nil
@@ -231,7 +239,7 @@ func (c *controller) patchDaemonsetWithNodeAffinity(s *apps.DaemonSet, annotatio
 
 	result, err := c.clientset.AppsV1().DaemonSets(s.Namespace).Patch(context.TODO(), s.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
-		klog.V(2).InfoS("failed to patch annotation for daemonsets", "daemonsets", s.Name, "err", err)
+		logrus.Errorf("failed to patch annotation for daemonsets, daemonsets: %v, err: %v", s.Name, err)
 		return nil, err
 	}
 
@@ -293,9 +301,124 @@ func (c *controller) patchDaemonsetWithoutSpecificNodeAffinity(s *apps.DaemonSet
 
 	result, err := c.clientset.AppsV1().DaemonSets(s.Namespace).Patch(context.TODO(), s.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
-		klog.V(2).InfoS("failed to patch annotation for daemonsets", "daemonsets", s.Name, "err", err)
+		logrus.Errorf("failed to patch annotation for daemonsets, daemonsets: %v, err: %v ", s.Name, err)
 		return nil, err
 	}
 
 	return result, nil
+}
+
+type namespaceController struct {
+	controller
+}
+
+// target delete-after rules
+func (c *namespaceController) syncDeleteAfterRules(namespace *v1.Namespace, lastActivity activity) error {
+	v, ok := namespace.Labels[c.DeleteAfterSelector]
+	if !ok || v == "" {
+		// namespace doesn't have delete-after label, do nothing
+		return nil
+	}
+
+	thresholdDuration, err := time.ParseDuration(v)
+	if err != nil {
+		return fmt.Errorf("time.ParseDuration failed, label %s, value %s", c.DeleteAfterSelector, v)
+	}
+
+	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration && namespace.Status.Phase != v1.NamespaceTerminating {
+		nl := logrus.WithField("namespace", namespace.Name).
+			WithField("lastActivityTime", lastActivity).
+			WithField("delete-after", v)
+		if !c.DryRun {
+			if err != c.clientset.CoreV1().Namespaces().Delete(context.Background(), namespace.Name, metav1.DeleteOptions{}) {
+				nl.WithError(err).Errorln("error delete namespace")
+				return err
+			}
+
+			nl.Info("delete inactivity namespace success")
+		}
+	}
+	return nil
+}
+
+// target sleep-after rules
+func (c *namespaceController) syncSleepAfterRules(namespace *v1.Namespace, lastActivity activity) error {
+	v, ok := namespace.Labels[c.SleepAfterSelector]
+	if !ok || v == "" {
+		// namespace doesn't have sleep-after label, do nothing
+		return nil
+	}
+
+	thresholdDuration, err := time.ParseDuration(v)
+	if err != nil {
+		return fmt.Errorf("time.ParseDuration failed, label %s, value %s", c.SleepAfterSelector, v)
+	}
+
+	state := namespace.Labels[c.ExecutionStateSelector]
+	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration {
+		switch state {
+		case DELETING:
+			// do nothing
+			// TODO: how to deal it if namespace hangs?
+		case SLEEP, SLEEPING:
+			// 当存在delete标签时不走此处的删除逻辑
+			v, ok := namespace.Labels[c.DeleteAfterSelector]
+			if ok && v != "" {
+				logrus.WithField("namespace", namespace.Name).WithField("delete-after", v).Debug("skip delete namespace")
+				return nil
+			}
+			// delete namespace if the namespace still in inactivity status
+			// after thresholdDuration * 2 time
+			if namespace.Status.Phase != v1.NamespaceTerminating && time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration*2 {
+				logrus.WithField("namespace", namespace.Name).
+					WithField("lastActivityTime", lastActivity.LastActivityTime).
+					WithField("sleep-after", v).Info("delete inactivity namespace")
+				if !c.DryRun {
+					err = c.clientset.CoreV1().Namespaces().Delete(context.TODO(), namespace.Name, metav1.DeleteOptions{})
+					if err != nil {
+						logrus.WithField("namespace", namespace.Name).Error("Error delete namespace")
+						return err
+					}
+				}
+			}
+		default:
+			/*
+				Enter into sleep mode
+				step1: update execution state with sleeping
+				step2: sleep namespace
+				step3: update execution state with sleep
+			*/
+			logrus.WithField("namespace", namespace.Name).
+				WithField("lastActivityTime", lastActivity.LastActivityTime).
+				WithField("sleep-after", v).Info("sleep inactivity namespace")
+			if _, err := c.setKubefreeExecutionState(namespace, SLEEPING); err != nil {
+				logrus.WithField("namespace", namespace.Name).WithError(err).Fatal("failed to SetKubefreeExecutionState")
+			}
+			if !c.DryRun {
+				if err := c.Sleep(namespace); err != nil {
+					logrus.WithField("namespace", namespace.Name).WithError(err).Fatal("failed to sleep namespace")
+				}
+			}
+			if _, err := c.setKubefreeExecutionState(namespace, SLEEP); err != nil {
+				logrus.WithField("namespace", namespace.Name).WithError(err).Fatal("failed to SetKubefreeExecutionState")
+			}
+		}
+	} else {
+		switch state {
+		case SLEEPING, SLEEP:
+			klog.Infof("wake up namespace %s", namespace.Name)
+			if !c.DryRun {
+				if err := c.WakeUp(namespace); err != nil {
+					logrus.WithField("namespace", namespace.Name).WithError(err).Errorln("failed to wake up namespace")
+				}
+			}
+
+			if _, err := c.setKubefreeExecutionState(namespace, NORMAL); err != nil {
+				logrus.WithField("namespace", namespace.Name).WithError(err).Errorln("failed to SetKubefreeExecutionState")
+			}
+		default:
+			// still in activity time scope,so do nothing
+		}
+	}
+	return nil
 }

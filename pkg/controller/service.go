@@ -22,7 +22,7 @@ func (c *controller) checkService(service *v1.Service) error {
 		return err
 	}
 
-	logrus.Debugf("pick service %s, last activity %v", service.Name, activity)
+	logrus.Debugf("pick service %s, last activity %v", service.Name, activity.LastActivityTime)
 
 	s := &serviceController{controller: *c}
 
@@ -63,10 +63,10 @@ func (sc *serviceController) syncDeleteAfterRules(service *v1.Service, lastActiv
 	}
 
 	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration {
-		nl.Info("delete service")
 		if err := sc.clientset.CoreV1().Services(service.Namespace).Delete(context.TODO(), service.Name, metav1.DeleteOptions{}); err != nil {
 			return fmt.Errorf("failed to delete service %s/%s, with err %v", service.Namespace, service.Name, err)
 		}
+		nl.Info("delete service successfully")
 	}
 
 	return nil

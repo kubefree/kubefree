@@ -18,14 +18,14 @@ func main() {
 	logrusutil.ComponentInit("kubefree-controller")
 
 	var logLevel string
-	flag.StringVar(&logLevel, "log-level", logrus.InfoLevel.String(), fmt.Sprintf("Logging level, one of %v", logrus.AllLevels))
 	var kubeconfig string
-	flag.StringVar(&kubeconfig, "kubeconfig", "", "absolute path to the kubeconfig file")
 	var dryRun bool
-	flag.BoolVar(&dryRun, "dryRun", false, "If set, kubefree controller will not delete or sleep namespace, but still annotate it")
 	var resyncDuration time.Duration
-	flag.DurationVar(&resyncDuration, "resyncDuration", time.Minute, "Resync duration for kubefree controller to list all namespaces")
 
+	flag.StringVar(&logLevel, "log-level", logrus.InfoLevel.String(), fmt.Sprintf("Logging level, one of %v", logrus.AllLevels))
+	flag.StringVar(&kubeconfig, "kubeconfig", "", "absolute path to the kubeconfig file")
+	flag.BoolVar(&dryRun, "dryRun", false, "If set, kubefree controller will not delete or sleep namespace, but still annotate it")
+	flag.DurationVar(&resyncDuration, "resyncDuration", time.Minute, "Resync duration for kubefree controller to list all namespaces")
 	flag.Parse()
 
 	level, err := logrus.ParseLevel(logLevel)
@@ -67,6 +67,8 @@ func main() {
 
 	//TODO: workers should be configurable
 	go ctl.Run(2, stop)
+
+	logrus.Infoln("kubefree-controller started")
 
 	// wait forever
 	select {}
