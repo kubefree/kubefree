@@ -50,12 +50,12 @@ func (sc *serviceController) syncDeleteAfterRules(service *v1.Service, lastActiv
 		return nil
 	}
 
-	nl := logrus.WithField("namespace", service.Namespace).
+	lg := logrus.WithField("namespace", service.Namespace).
 		WithField("service", service.Name).
 		WithField("lastActivityTime", lastActivity.LastActivityTime).
 		WithField("delete-after", v)
 
-	nl.Debug("checking delete-after rules")
+	lg.Debug("checking delete-after rules")
 
 	thresholdDuration, err := time.ParseDuration(v)
 	if err != nil {
@@ -66,13 +66,14 @@ func (sc *serviceController) syncDeleteAfterRules(service *v1.Service, lastActiv
 		if err := sc.clientset.CoreV1().Services(service.Namespace).Delete(context.TODO(), service.Name, metav1.DeleteOptions{}); err != nil {
 			return fmt.Errorf("failed to delete service %s/%s, with err %v", service.Namespace, service.Name, err)
 		}
-		nl.Info("delete service successfully")
+		lg.Info("delete service successfully")
 	}
 
 	return nil
 }
 
-// TODO(CarlJi): implement the syncSleepAfterRules method
+// ignore sleep-after rules for service, since service do not need support sleep-after rules
+// currently, this function do nothing
 func (sc *serviceController) syncSleepAfterRules(service *v1.Service, lastActivity activity) error {
 	v, ok := service.Labels[sc.SleepAfterSelector]
 	if !ok || v == "" {
@@ -80,12 +81,12 @@ func (sc *serviceController) syncSleepAfterRules(service *v1.Service, lastActivi
 		return nil
 	}
 
-	nl := logrus.WithField("namespace", service.Namespace).
+	lg := logrus.WithField("namespace", service.Namespace).
 		WithField("service", service.Name).
 		WithField("lastActivityTime", lastActivity.LastActivityTime).
 		WithField("sleep-after", v)
 
-	nl.Debug("checking sleep-after rules")
+	lg.Infoln("ignore sleep-after rules for service, since service do not need support sleep-after rules")
 
 	return nil
 }
