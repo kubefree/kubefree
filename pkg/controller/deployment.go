@@ -10,6 +10,7 @@ import (
 	"github.com/qiniu/x/log"
 	"gopkg.in/yaml.v2"
 	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -101,6 +102,14 @@ func (dc *deploymentController) syncSleepAfterRules(deployment *appsv1.Deploymen
 			// delete deployment if it's inactivity for 2*thresholdDuration
 			if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration*2 {
 				if !dc.DryRun {
+					deployment, err := dc.clientset.AppsV1().Deployments(deployment.Namespace).Get(context.Background(), deployment.Name, metav1.GetOptions{})
+					if err != nil {
+						if apierrors.IsNotFound(err) {
+							return nil
+						}
+						return err
+					}
+
 					if err := dc.clientset.AppsV1().Deployments(deployment.Namespace).Delete(context.Background(), deployment.Name, metav1.DeleteOptions{}); err != nil {
 						log.Errorf("Error delete deployment: %v", err)
 						return err

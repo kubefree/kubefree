@@ -63,6 +63,7 @@ func NewController(clientset *kubernetes.Clientset, resyncDuration time.Duration
 			queue.Add(obj.(*v1.Namespace))
 		},
 		UpdateFunc: func(old, new interface{}) {
+			queue.Forget(old.(*v1.Namespace))
 			queue.Add(new.(*v1.Namespace))
 		},
 		DeleteFunc: func(obj interface{}) {
@@ -75,6 +76,7 @@ func NewController(clientset *kubernetes.Clientset, resyncDuration time.Duration
 			queue.Add(obj.(*appsv1.Deployment))
 		},
 		UpdateFunc: func(old, new interface{}) {
+			queue.Forget(old.(*appsv1.Deployment))
 			queue.Add(new.(*appsv1.Deployment))
 		},
 		DeleteFunc: func(obj interface{}) {

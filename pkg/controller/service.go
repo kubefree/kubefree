@@ -7,6 +7,7 @@ import (
 
 	"github.com/qiniu/x/log"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -59,6 +60,14 @@ func (sc *serviceController) syncDeleteAfterRules(service *v1.Service, lastActiv
 	}
 
 	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration {
+		service, err := sc.clientset.CoreV1().Services(service.Namespace).Get(context.TODO(), service.Name, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return true, nil
+			}
+			return false, err
+		}
+
 		if err := sc.clientset.CoreV1().Services(service.Namespace).Delete(context.TODO(), service.Name, metav1.DeleteOptions{}); err != nil {
 			return false, fmt.Errorf("failed to delete service %s/%s, with err %v", service.Namespace, service.Name, err)
 		}
