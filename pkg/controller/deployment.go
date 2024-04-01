@@ -244,7 +244,7 @@ func (dc *deploymentController) wakeUp(deployment *appsv1.Deployment) error {
 	}
 
 	// remove legacy replicas annotation after wake up to avoid duplicate wake up
-	if _, err := dc.deleteAnnotation(deployment, LegacyReplicasAnnotation); err != nil {
+	if _, err := dc.deleteAnnotation(de, LegacyReplicasAnnotation); err != nil {
 		return fmt.Errorf("failed to patch deployment %s, err: %v", de.Name, err)
 	}
 

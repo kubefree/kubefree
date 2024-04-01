@@ -4,32 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
-)
-
-const (
-	SleepAfterLabel     = "sleepmode.kubefree.com/sleep-after"
-	DeleteAfterLabel    = "sleepmode.kubefree.com/delete-after"
-	ExecutionStateLabel = "sleepmode.kubefree.com/state"
-
-	NamespaceActivityStatusAnnotation = "sleepmode.kubefree.com/activity-status"
-	LegacyReplicasAnnotation          = "sleepmode.kubefree.com/legacy-replicas"
-)
-
-// execution state of namespace controlled by kubefree
-const (
-	//
-	NORMAL   string = "normal"
-	SLEEPING string = "sleeping"
-	SLEEP    string = "sleep"
-	DELETING string = "deleting"
 )
 
 func (c *controller) checkNamespace(ns *v1.Namespace) error {
@@ -60,252 +47,6 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 	}
 
 	return nil
-}
-
-type userInfo struct {
-	Name        string `json:"Name"`
-	Impersonate string `json:"Impersonate"`
-	RancherName string `json:"RancherName,omitempty"`
-}
-
-type customTime time.Time
-
-func (ct *customTime) UnmarshalJSON(b []byte) error {
-	t, err := time.Parse(`"2006-01-02T15:04:05Z07:00"`, string(b))
-	if err == nil {
-		*ct = customTime(t)
-		return nil
-	}
-
-	t, err = time.Parse(`"2006-01-02T15:04:05"`, string(b))
-	if err != nil {
-		return err
-	}
-
-	*ct = customTime(t.UTC())
-	return nil
-}
-
-func (ct customTime) String() string {
-	return time.Time(ct).String()
-}
-
-type activity struct {
-	LastActivityTime customTime `json:"LastActivityTime"`
-	Action           string     `json:"Action"`
-	Resource         string     `json:"Resource"`
-	Namespace        string     `json:"Namespace"`
-	User             userInfo   `json:"UserInfo"`
-}
-
-func (a activity) String() string {
-	return fmt.Sprintf("LastActivityTime: %v, Action: %v, Resource: %v, Namespace: %v, UserInfo: %v", a.LastActivityTime, a.Action, a.Resource, a.Namespace, a.User)
-}
-
-func getActivity(src string) (*activity, error) {
-	activity := &activity{}
-	err := json.Unmarshal([]byte(src), activity)
-	if err != nil {
-		return nil, err
-	}
-	return activity, nil
-}
-
-func (ct *customTime) Time() time.Time {
-	return time.Time(*ct)
-}
-
-func (c *controller) patchDeploymentWithAnnotation(d *apps.Deployment, annotation, value string) (*apps.Deployment, error) {
-	if d == nil {
-		return nil, fmt.Errorf("unexpected deployment as nil")
-	}
-	oldDeploymentData, err := json.Marshal(d)
-	if err != nil {
-		return nil, err
-	}
-
-	newD := d.DeepCopy()
-	if newD.Annotations == nil {
-		newD.Annotations = make(map[string]string)
-	}
-
-	newD.Annotations[annotation] = value
-	newDeploymentData, err := json.Marshal(newD)
-	if err != nil {
-		return nil, err
-	}
-
-	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldDeploymentData, newDeploymentData, &apps.Deployment{})
-	if err != nil {
-		return nil, err
-	}
-
-	result, err := c.clientset.AppsV1().Deployments(d.Namespace).Patch(context.TODO(), d.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
-	if err != nil {
-		logrus.Errorf("failed to patch annotation for deployment, deployment: %v, err: %v ", d.Name, err)
-		return nil, err
-	}
-	return result, nil
-}
-
-func (c *controller) patchStatefulsetWithAnnotation(s *apps.StatefulSet, annotation, value string) (*apps.StatefulSet, error) {
-	if s == nil {
-		return nil, fmt.Errorf("unexpected statefulset as nil")
-	}
-
-	oldData, err := json.Marshal(s)
-	if err != nil {
-		return nil, err
-	}
-
-	newD := s.DeepCopy()
-	if newD.Annotations == nil {
-		newD.Annotations = make(map[string]string)
-	}
-
-	newD.Annotations[annotation] = value
-	newData, err := json.Marshal(newD)
-	if err != nil {
-		return nil, err
-	}
-
-	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, &apps.StatefulSet{})
-	if err != nil {
-		return nil, err
-	}
-
-	result, err := c.clientset.AppsV1().StatefulSets(s.Namespace).Patch(context.TODO(), s.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
-	if err != nil {
-		logrus.Errorf("failed to patch annotation for statefulset, statefulset: %v, err: %v ", s.Name, err)
-		return nil, err
-	}
-	return result, nil
-}
-
-// hardcode flag for sleep daemonset
-var defaultExpression = v1.NodeSelectorRequirement{
-	Key:      "sleep.kubefree.com/not-existing-key",
-	Operator: v1.NodeSelectorOpIn,
-	Values:   []string{"sleep"},
-}
-
-func (c *controller) patchDaemonsetWithNodeAffinity(s *apps.DaemonSet, annotation, value string) (*apps.DaemonSet, error) {
-	if s == nil {
-		return nil, fmt.Errorf("unexpected statefulset as nil")
-	}
-
-	oldData, err := json.Marshal(s)
-	if err != nil {
-		return nil, err
-	}
-
-	newD := s.DeepCopy()
-	if newD.Annotations == nil {
-		newD.Annotations = make(map[string]string)
-	}
-
-	// still patch daemonset with legacy-replicas annotation
-	newD.Annotations[annotation] = value
-
-	if newD.Spec.Template.Spec.Affinity == nil {
-		newD.Spec.Template.Spec.Affinity = &v1.Affinity{}
-	}
-
-	if newD.Spec.Template.Spec.Affinity.NodeAffinity == nil {
-		newD.Spec.Template.Spec.Affinity.NodeAffinity = &v1.NodeAffinity{}
-	}
-
-	if newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-		newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = &v1.NodeSelector{}
-	}
-
-	if newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms == nil {
-		newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = []v1.NodeSelectorTerm{}
-	}
-
-	selectorTerm := v1.NodeSelectorTerm{}
-	selectorTerm.MatchExpressions = append(selectorTerm.MatchExpressions, defaultExpression)
-	newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = append(newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms, selectorTerm)
-
-	newData, err := json.Marshal(newD)
-	if err != nil {
-		return nil, err
-	}
-
-	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, &apps.DaemonSet{})
-	if err != nil {
-		return nil, err
-	}
-
-	result, err := c.clientset.AppsV1().DaemonSets(s.Namespace).Patch(context.TODO(), s.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
-	if err != nil {
-		logrus.Errorf("failed to patch annotation for daemonsets, daemonsets: %v, err: %v", s.Name, err)
-		return nil, err
-	}
-
-	return result, nil
-}
-
-func (c *controller) patchDaemonsetWithoutSpecificNodeAffinity(s *apps.DaemonSet, key, value string) (*apps.DaemonSet, error) {
-	if s == nil {
-		return nil, fmt.Errorf("unexpected statefulset as nil")
-	}
-
-	oldData, err := json.Marshal(s)
-	if err != nil {
-		return nil, err
-	}
-
-	newD := s.DeepCopy()
-	if newD.Spec.Template.Spec.Affinity == nil ||
-		newD.Spec.Template.Spec.Affinity.NodeAffinity == nil ||
-		newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil ||
-		newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms == nil ||
-		len(newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms) == 0 {
-
-		return nil, nil
-	}
-
-	var newSelectorTerm = []v1.NodeSelectorTerm{}
-	for _, st := range newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
-		var newExpression = []v1.NodeSelectorRequirement{}
-		for _, express := range st.MatchExpressions {
-			// remove default expression patched by kubefree
-			if express.Key != defaultExpression.Key {
-				newExpression = append(newExpression, express)
-			}
-		}
-
-		if len(newExpression) != 0 {
-			var newNodeSelectorTerm = st
-			newNodeSelectorTerm.MatchExpressions = newExpression
-			newSelectorTerm = append(newSelectorTerm, newNodeSelectorTerm)
-		}
-	}
-
-	if len(newSelectorTerm) != 0 {
-		newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = newSelectorTerm
-	} else {
-		newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = nil
-	}
-
-	newData, err := json.Marshal(newD)
-	if err != nil {
-		return nil, err
-	}
-
-	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, &apps.DaemonSet{})
-	if err != nil {
-		return nil, err
-	}
-
-	result, err := c.clientset.AppsV1().DaemonSets(s.Namespace).Patch(context.TODO(), s.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
-	if err != nil {
-		logrus.Errorf("failed to patch annotation for daemonsets, daemonsets: %v, err: %v ", s.Name, err)
-		return nil, err
-	}
-
-	return result, nil
 }
 
 type namespaceController struct {
@@ -387,7 +128,7 @@ func (c *namespaceController) syncSleepAfterRules(namespace *v1.Namespace, lastA
 				return err
 			}
 			if !c.DryRun {
-				if err := c.Sleep(namespace); err != nil {
+				if err := c.sleep(namespace); err != nil {
 					lg.WithError(err).Errorln("failed to sleep namespace")
 					return err
 				}
@@ -403,7 +144,7 @@ func (c *namespaceController) syncSleepAfterRules(namespace *v1.Namespace, lastA
 		case SLEEPING, SLEEP:
 			lg.Infof("try to wake up namespace %s", namespace.Name)
 			if !c.DryRun {
-				if err := c.WakeUp(namespace); err != nil {
+				if err := c.wakeUp(namespace); err != nil {
 					lg.WithError(err).Errorln("failed to wake up namespace")
 					return err
 				}
@@ -451,4 +192,176 @@ func (c *namespaceController) setKubefreeExecutionState(namespace *v1.Namespace,
 		return nil, err
 	}
 	return result, nil
+}
+
+// 依次判断deployment、statefulset、deamonset，每个执行以下操作
+//  1. 判断是否有legacy replicas，如果有则报错
+//  2. 获得原来的replicas，并保存为legacy replicas annotation
+//  3. 设置 replicas ==0
+func (c *namespaceController) sleep(ns *v1.Namespace) error {
+	//TODO: refactor
+	// deployment
+	deploymentLists, err := c.clientset.AppsV1().Deployments(ns.Name).List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to list deployments, with err %v", err)
+	}
+
+	for _, d := range deploymentLists.Items {
+		_, err = c.patchDeploymentWithAnnotation(&d, LegacyReplicasAnnotation, strconv.FormatInt(int64(*d.Spec.Replicas), 10))
+		if err != nil {
+			return fmt.Errorf("failed to set annotation for deployment %s, err: %v", d.Name, err)
+		}
+
+		_, err = c.scale(context.TODO(), d.Name, d.Namespace, "0", schema.GroupResource{Group: "apps", Resource: "deployments"})
+		if err != nil {
+			return fmt.Errorf("failed to update scale for deployment %s/%s, with err %v", d.Namespace, d.Name, err)
+		}
+
+		logrus.WithField("namespace", ns.Name).WithField("deployment", d.Name).Info("sleep deployment successfully")
+	}
+
+	// statefulset
+	ssLists, err := c.clientset.AppsV1().StatefulSets(ns.Name).List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to list StatefulSets, with err %v", err)
+	}
+
+	for _, ss := range ssLists.Items {
+		_, err = c.patchStatefulsetWithAnnotation(&ss, LegacyReplicasAnnotation, strconv.FormatInt(int64(*ss.Spec.Replicas), 10))
+		if err != nil {
+			return fmt.Errorf("failed to set annotation for statefulset %s, err: %v", ss.Name, err)
+		}
+
+		_, err = c.scale(context.TODO(), ss.Name, ss.Namespace, "0", schema.GroupResource{Group: "apps", Resource: "statefulsets"})
+		if err != nil {
+			return fmt.Errorf("failed to update scale for statefulset %s/%s, with err %v", ss.Namespace, ss.Name, err)
+		}
+		logrus.WithField("namespace", ns.Name).WithField("statefulset", ss.Name).Info("sleep statefulset successfully")
+	}
+
+	// deamonsets
+	dsLists, err := c.clientset.AppsV1().DaemonSets(ns.Name).List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to list daemonset, with err %v", err)
+	}
+
+	for _, ss := range dsLists.Items {
+		_, err = c.patchDaemonsetWithNodeAffinity(&ss, LegacyReplicasAnnotation, strconv.FormatInt(int64(ss.Status.DesiredNumberScheduled), 10))
+		if err != nil {
+			return fmt.Errorf("failed to set annotation for daemonset %s, err: %v", ss.Name, err)
+		}
+
+		logrus.WithField("namespace", ns.Name).WithField("daemonset", ss.Name).Info("sleep daemonset successfully")
+	}
+
+	// TODO: others?
+
+	return nil
+}
+
+// TODO: is it necessary to delete legacy replicas annotation?
+func (c *namespaceController) wakeUp(ns *v1.Namespace) error {
+	// 依次判断deployment、statefulset、deamonset，每个执行以下操作
+	// 	1. 判断是否有legacy replicas，如果没有则报错
+	//  2. 设置 replicas == legacy replicas
+
+	workloadWg := &sync.WaitGroup{}
+
+	// error channel to collect failures.
+	// will make the buffer big enough to avoid any blocking
+	var errCh chan error
+
+	// deployment
+	deploymentLists, err := c.clientset.AppsV1().Deployments(ns.Name).List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to list deployments, with err %v", err)
+	}
+
+	// TODO: can deploymentLists be nil?
+	if deploymentLists != nil {
+		workloadWg.Add(len(deploymentLists.Items))
+		errCh = make(chan error, len(deploymentLists.Items))
+	}
+
+	// statefulset
+	ssLists, err := c.clientset.AppsV1().StatefulSets(ns.Name).List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to list StatefulSets, with err %v", err)
+	}
+	// TODO: can ssLists be nil?
+	if ssLists != nil {
+		workloadWg.Add(len(ssLists.Items))
+		errCh = make(chan error, len(errCh)+len(ssLists.Items))
+	}
+
+	// deamonsets
+	dsLists, err := c.clientset.AppsV1().DaemonSets(ns.Name).List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to list DaemonSets, with err %v", err)
+	}
+
+	if dsLists != nil {
+		workloadWg.Add(len(dsLists.Items))
+		errCh = make(chan error, len(errCh)+len(dsLists.Items))
+	}
+
+	for _, dsItem := range dsLists.Items {
+		v, ok := dsItem.Annotations[LegacyReplicasAnnotation]
+		if !ok || len(v) == 0 {
+			return fmt.Errorf("unexpected legacy replicas annotation %s for the daemonset %s", LegacyReplicasAnnotation, dsItem.Name)
+		}
+		go func(ds apps.DaemonSet) {
+			defer workloadWg.Done()
+			_, err = c.patchDaemonsetWithoutSpecificNodeAffinity(&ds, LegacyReplicasAnnotation, strconv.FormatInt(int64(ds.Status.DesiredNumberScheduled), 10))
+			if err != nil {
+				logrus.Infof("Failed scaled for daemonset %q/%q", ds.Namespace, &ds.Name)
+				errCh <- err
+				utilruntime.HandleError(err)
+			}
+
+		}(dsItem)
+	}
+
+	for _, deploy := range deploymentLists.Items {
+		v, ok := deploy.Annotations[LegacyReplicasAnnotation]
+		if !ok || len(v) == 0 {
+			return fmt.Errorf("unexpected legacy replicas annotation %s for the deployment %s", LegacyReplicasAnnotation, deploy.Name)
+		}
+
+		go func(d apps.Deployment) {
+			defer workloadWg.Done()
+			_, err = c.scale(context.TODO(), d.Name, d.Namespace, v, schema.GroupResource{Group: "apps", Resource: "deployments"})
+			if err != nil {
+				logrus.Infof("Failed scaled for deployment %q/%q", d.Namespace, d.Name)
+				errCh <- err
+				utilruntime.HandleError(err)
+			}
+		}(deploy)
+	}
+
+	for _, statefulsetItem := range ssLists.Items {
+		v, ok := statefulsetItem.Annotations[LegacyReplicasAnnotation]
+		if !ok || len(v) == 0 {
+			return fmt.Errorf("unexpected legacy replicas annotation %s for the deployment %s", LegacyReplicasAnnotation, statefulsetItem.Name)
+		}
+
+		go func(ss apps.StatefulSet) {
+			defer workloadWg.Done()
+			_, err = c.scale(context.TODO(), ss.Name, ss.Namespace, v, schema.GroupResource{Group: "apps", Resource: "statefulsets"})
+			if err != nil {
+				logrus.Infof("Failed scaled for deployment %q/%q", ss.Namespace, ss.Name)
+				errCh <- err
+				utilruntime.HandleError(err)
+			}
+		}(statefulsetItem)
+	}
+
+	workloadWg.Wait()
+	// collect errors if any for proper reporting/retry logic in the controller
+	errors := []error{}
+	close(errCh)
+	for err := range errCh {
+		errors = append(errors, err)
+	}
+	return utilerrors.NewAggregate(errors)
 }
