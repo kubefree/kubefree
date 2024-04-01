@@ -2,63 +2,56 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"time"
 
-	"github.com/sirupsen/logrus"
+	"github.com/qiniu/x/log"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
 	ctl "github.com/kubefree/pkg/controller"
-	"github.com/kubefree/pkg/logrusutil"
 )
 
 func main() {
-	logrusutil.ComponentInit("kubefree-controller")
-
-	var logLevel string
+	var logLevel int
 	var kubeconfig string
 	var dryRun bool
 	var resyncDuration time.Duration
 
-	flag.StringVar(&logLevel, "log-level", logrus.InfoLevel.String(), fmt.Sprintf("Logging level, one of %v", logrus.AllLevels))
+	flag.IntVar(&logLevel, "logLevel", 0, "log level")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "absolute path to the kubeconfig file")
 	flag.BoolVar(&dryRun, "dryRun", false, "If set, kubefree controller will not delete or sleep namespace, but still annotate it")
 	flag.DurationVar(&resyncDuration, "resyncDuration", time.Minute, "Resync duration for kubefree controller to list all namespaces")
 	flag.Parse()
 
-	level, err := logrus.ParseLevel(logLevel)
-	if err != nil {
-		logrus.WithError(err).Fatal("Error logrus.ParseLevel")
-	}
-	logrus.SetLevel(level)
+	log.SetOutputLevel(logLevel)
 
 	var config *rest.Config
+	var err error
 	if len(kubeconfig) > 0 {
 		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
-			logrus.WithError(err).Fatal("Error clientcmd.BuildConfigFromFlags")
+			log.Fatalf("Error clientcmd.BuildConfigFromFlags: %v", err)
 		}
 	} else {
 		config, err = rest.InClusterConfig()
 		if err != nil {
-			logrus.WithError(err).Fatal("Error logrus.ParseLevel")
+			log.Fatal("Error rest.InClusterConfig")
 		}
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		logrus.WithError(err).Fatal("Error kubernetes.NewForConfig")
+		log.Fatalf("Error kubernetes.NewForConfig: %v", err)
 	}
 
 	ctl, err := ctl.NewController(clientset, resyncDuration)
 	if err != nil {
-		logrus.WithError(err).Fatal("Error plank.NewController")
+		log.Fatalf("Error NewController: %v", err)
 	}
 
 	if dryRun {
-		logrus.Info("Running in dryRun mode")
+		log.Info("Dry run mode enabled")
 		ctl.DryRun = dryRun
 	}
 
@@ -68,7 +61,7 @@ func main() {
 	//TODO: workers should be configurable
 	go ctl.Run(2, stop)
 
-	logrus.Infoln("kubefree-controller started")
+	log.Info("kubefree-controller started")
 
 	// wait forever
 	select {}

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/sirupsen/logrus"
+	"github.com/qiniu/x/log"
 	"gopkg.in/yaml.v2"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,13 +28,13 @@ func (c *controller) checkDeployment(deployment *appsv1.Deployment) error {
 		return err
 	}
 
-	logrus.Debugf("pick deployment %s", deployment.Name)
+	log.Debugf("pick deployment %s", deployment.Name)
 
 	d := &deploymentController{controller: *c}
 
 	// check delete-after-seconds rules
 	if deleted, err := d.syncDeleteAfterRules(deployment, *activity); err != nil {
-		logrus.WithError(err).Errorln("Error SyncDeleteAfterRules")
+		log.Errorf("Error SyncDeleteAfterRules: %v", err)
 		return err
 	} else if deleted {
 		// if deleted, no need to check sleep-after rules
@@ -43,7 +43,7 @@ func (c *controller) checkDeployment(deployment *appsv1.Deployment) error {
 
 	// check sleep-after rules
 	if err = d.syncSleepAfterRules(deployment, *activity); err != nil {
-		logrus.WithError(err).Errorln("Error SyncSleepAfterRules")
+		log.Errorf("Error SyncSleepAfterRules: %v", err)
 		return err
 	}
 
@@ -61,13 +61,6 @@ func (dc *deploymentController) syncDeleteAfterRules(deployment *appsv1.Deployme
 		return
 	}
 
-	lg := logrus.WithField("namespace", deployment.Namespace).
-		WithField("deployment", deployment.Name).
-		WithField("lastActivityTime", lastActivity.LastActivityTime).
-		WithField("delete-after", v)
-
-	lg.Debug("checking delete-after rules")
-
 	thresholdDuration, err := time.ParseDuration(v)
 	if err != nil {
 		return false, fmt.Errorf("time.ParseDuration failed, label %s, value %s", dc.DeleteAfterSelector, v)
@@ -76,10 +69,10 @@ func (dc *deploymentController) syncDeleteAfterRules(deployment *appsv1.Deployme
 	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration {
 		if !dc.DryRun {
 			if err != dc.clientset.AppsV1().Deployments(deployment.Namespace).Delete(context.Background(), deployment.Name, metav1.DeleteOptions{}) {
-				lg.WithError(err).Errorln("Error delete deployment")
+				log.Errorf("Error delete deployment: %v", err)
 				return false, err
 			}
-			lg.Info("delete deployment successfully")
+			log.Infof("delete deployment %s successfully", deployment.Name)
 			return true, nil
 		}
 	}
@@ -93,13 +86,6 @@ func (dc *deploymentController) syncSleepAfterRules(deployment *appsv1.Deploymen
 		// namespace doesn't have sleep-after label, do nothing
 		return nil
 	}
-
-	lg := logrus.WithField("namespace", deployment.Namespace).
-		WithField("deployment", deployment.Name).
-		WithField("lastActivityTime", lastActivity.LastActivityTime).
-		WithField("sleep-after", v)
-
-	lg.Debug("checking sleep-after rules")
 
 	thresholdDuration, err := time.ParseDuration(v)
 	if err != nil {
@@ -116,10 +102,10 @@ func (dc *deploymentController) syncSleepAfterRules(deployment *appsv1.Deploymen
 			if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration*2 {
 				if !dc.DryRun {
 					if err := dc.clientset.AppsV1().Deployments(deployment.Namespace).Delete(context.Background(), deployment.Name, metav1.DeleteOptions{}); err != nil {
-						lg.WithError(err).Error("Error delete deployment")
+						log.Errorf("Error delete deployment: %v", err)
 						return err
 					}
-					lg.Infoln("delete inactivity deployment successfully")
+					log.Infof("delete deployment %s successfully", deployment.Name)
 				}
 			}
 		default:
@@ -129,38 +115,38 @@ func (dc *deploymentController) syncSleepAfterRules(deployment *appsv1.Deploymen
 				step2: sleep namespace
 				step3: update execution state with sleep
 			*/
-			lg.Info("try to sleep inactivity deployment")
+			log.Infof("try to sleep deployment %s", deployment.Name)
 			if _, err := dc.setKubefreeExecutionState(deployment, SLEEPING); err != nil {
-				lg.WithError(err).Errorln("failed to SetKubefreeExecutionState")
+				log.Errorf("failed to SetKubefreeExecutionState: %v", err)
 				return err
 			}
 			if !dc.DryRun {
 				if err := dc.sleep(deployment); err != nil {
-					lg.WithError(err).Errorln("failed to sleep deployment")
+					log.Errorf("Error sleep deployment: %v", err)
 					return err
 				}
 			}
 			if _, err := dc.setKubefreeExecutionState(deployment, SLEEP); err != nil {
-				lg.WithError(err).Errorln("failed to SetKubefreeExecutionState")
+				log.Errorf("failed to SetKubefreeExecutionState: %v", err)
 				return err
 			}
-			lg.Infoln("sleep inactivity deployment successfully")
+			log.Infof("sleep inactivity deployment %s successfully", deployment.Name)
 		}
 	} else {
 		switch state {
 		case SLEEPING, SLEEP:
-			lg.Infof("try to wake up deployment %s", deployment.Name)
+			log.Infof("try to wake up deployment %s", deployment.Name)
 			if !dc.DryRun {
 				if err := dc.wakeUp(deployment); err != nil {
-					lg.WithError(err).Errorln("failed to wake up deployment")
+					log.Errorf("Error wake up deployment: %v", err)
 					return err
 				}
+				log.Infof("wake up deployment %s successfully", deployment.Name)
 			}
 
 			if _, err := dc.setKubefreeExecutionState(deployment, NORMAL); err != nil {
-				lg.WithError(err).Errorln("failed to SetKubefreeExecutionState")
+				log.Errorf("failed to SetKubefreeExecutionState: %v", err)
 			}
-			lg.Infoln("wake up deployment successfully")
 		default:
 			// still in activity time scope,so do nothing
 		}
@@ -197,7 +183,7 @@ func (dc *deploymentController) setKubefreeExecutionState(deployment *appsv1.Dep
 
 	result, err := dc.clientset.AppsV1().Deployments(deployment.Namespace).Patch(context.TODO(), deployment.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
-		logrus.Errorf("failed to patch annotation for deployment, deployment: %v , err: %v", fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name), err)
+		log.Errorf("failed to patch annotation for deployment, deployment: %v , err: %v", fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name), err)
 		return nil, err
 	}
 	return result, nil
@@ -244,7 +230,7 @@ func (dc *deploymentController) wakeUp(deployment *appsv1.Deployment) error {
 
 	_, err = dc.scale(context.TODO(), de.Name, de.Namespace, v, schema.GroupResource{Group: "apps", Resource: "deployments"})
 	if err != nil {
-		logrus.WithField("namespace", de.Namespace).WithField("deployment", de.Name).WithField("action", "wakeUp").WithError(err).Error("failed to wake up deployment")
+		log.Errorf("failed to update scale for deployment %s/%s, with err %v", de.Namespace, de.Name, err)
 		return err
 	}
 
@@ -253,7 +239,7 @@ func (dc *deploymentController) wakeUp(deployment *appsv1.Deployment) error {
 		return fmt.Errorf("failed to patch deployment %s, err: %v", de.Name, err)
 	}
 
-	logrus.WithField("namespace", de.Namespace).WithField("deployment", de.Name).Info("wake up deployment successfully")
+	log.Infof("wake up deployment %s successfully", de.Name)
 	return nil
 }
 

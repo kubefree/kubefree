@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sirupsen/logrus"
+	"github.com/qiniu/x/log"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	v1 "k8s.io/api/core/v1"
@@ -149,28 +149,26 @@ func (c *controller) processNextItem() bool {
 func (c *controller) processItem(obj interface{}) error {
 	switch v := obj.(type) {
 	case *v1.Namespace:
-		// logrus.Debugf("Namespace processItem: %s", v.Name)
 		// no need to handle the namespace if it's not active
 		if v.Status.Phase != v1.NamespaceActive {
 			return nil
 		}
 		if err := c.checkNamespace(v); err != nil {
-			logrus.WithError(err).Warnf("checkNamespace failed, ns: %s", v.Name)
+			log.Errorf("checkNamespace failed, ns: %v, err: %v", v, err)
 			return err
 		}
 	case *appsv1.Deployment:
 		if err := c.checkDeployment(v); err != nil {
-			logrus.WithError(err).Warnf("checkDeployment failed, deployment: %s", v.Name)
+			log.Errorf("checkDeployment failed, deployment: %v, err: %v", v, err)
 			return err
 		}
 	case *v1.Service:
-		// logrus.Debugf("service processItem: %s", v.Name)
 		if err := c.checkService(v); err != nil {
-			logrus.WithError(err).Warnf("checkService failed, service: %s", v.Name)
+			log.Errorf("checkService failed, service: %v, err: %v", v, err)
 			return err
 		}
 	default:
-		logrus.Infof("unknown object type: %T", v)
+		log.Infof("unknown object: %v", v)
 	}
 
 	return nil
@@ -195,7 +193,7 @@ func (c *controller) handleErr(err error, key interface{}) {
 
 	// This controller retries 5 times if something goes wrong. After that, it stops trying.
 	if c.queue.NumRequeues(key) < 5 {
-		logrus.Infof("Error syncing %v: %v", key, err)
+		log.Errorf("Error syncing %v: %v", key, err)
 
 		// Re-enqueue the key rate limited. Based on the rate limiter on the
 		// queue and the re-enqueue history, the key will be processed later again.
@@ -206,7 +204,7 @@ func (c *controller) handleErr(err error, key interface{}) {
 	c.queue.Forget(key)
 	// Report to an external entity that, even after several retries, we could not successfully process this key
 	runtime.HandleError(err)
-	logrus.Errorf("failed to handle %v, err: %v, dropping this key from the queue", key, err)
+	log.Errorf("failed to handle %v, err: %v, dropping this key from the queue", key, err)
 }
 
 func (c *controller) patchDeploymentWithAnnotation(d *appsv1.Deployment, annotation, value string) (*appsv1.Deployment, error) {
@@ -236,7 +234,7 @@ func (c *controller) patchDeploymentWithAnnotation(d *appsv1.Deployment, annotat
 
 	result, err := c.clientset.AppsV1().Deployments(d.Namespace).Patch(context.TODO(), d.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
-		logrus.Errorf("failed to patch annotation for deployment, deployment: %v, err: %v ", d.Name, err)
+		log.Errorf("failed to patch annotation for deployment, deployment: %v, err: %v ", d.Name, err)
 		return nil, err
 	}
 	return result, nil
@@ -270,7 +268,7 @@ func (c *controller) patchStatefulsetWithAnnotation(s *appsv1.StatefulSet, annot
 
 	result, err := c.clientset.AppsV1().StatefulSets(s.Namespace).Patch(context.TODO(), s.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
-		logrus.Errorf("failed to patch annotation for statefulset, statefulset: %v, err: %v ", s.Name, err)
+		log.Errorf("failed to patch annotation for statefulset, statefulset: %v, err: %v ", s.Name, err)
 		return nil, err
 	}
 	return result, nil
@@ -333,7 +331,7 @@ func (c *controller) patchDaemonsetWithNodeAffinity(s *appsv1.DaemonSet, annotat
 
 	result, err := c.clientset.AppsV1().DaemonSets(s.Namespace).Patch(context.TODO(), s.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
-		logrus.Errorf("failed to patch annotation for daemonsets, daemonsets: %v, err: %v", s.Name, err)
+		log.Errorf("failed to patch annotation for daemonsets, daemonsets: %v, err: %v", s.Name, err)
 		return nil, err
 	}
 
@@ -395,7 +393,7 @@ func (c *controller) patchDaemonsetWithoutSpecificNodeAffinity(s *appsv1.DaemonS
 
 	result, err := c.clientset.AppsV1().DaemonSets(s.Namespace).Patch(context.TODO(), s.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
-		logrus.Errorf("failed to patch annotation for daemonsets, daemonsets: %v, err: %v ", s.Name, err)
+		log.Errorf("failed to patch annotation for daemonsets, daemonsets: %v, err: %v ", s.Name, err)
 		return nil, err
 	}
 
