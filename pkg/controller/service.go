@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/sirupsen/logrus"
+	"github.com/qiniu/x/log"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -22,12 +22,12 @@ func (c *controller) checkService(service *v1.Service) error {
 		return err
 	}
 
-	logrus.Debugf("pick service %s, last activity %v", service.Name, activity.LastActivityTime)
+	log.Debugf("pick service %s", service.Name)
 
 	s := &serviceController{controller: *c}
 
 	if deleted, err := s.syncDeleteAfterRules(service, *activity); err != nil {
-		logrus.WithError(err).Errorln("Error SyncDeleteAfterRules")
+		log.Errorf("Error SyncDeleteAfterRules: %v", err)
 		return err
 	} else if deleted {
 		// service has been deleted, do nothing
@@ -35,7 +35,7 @@ func (c *controller) checkService(service *v1.Service) error {
 	}
 
 	if err := s.syncSleepAfterRules(service, *activity); err != nil {
-		logrus.WithError(err).Errorln("Error SyncSleepAfterRules")
+		log.Errorf("Error SyncSleepAfterRules: %v", err)
 		return err
 	}
 
@@ -53,13 +53,6 @@ func (sc *serviceController) syncDeleteAfterRules(service *v1.Service, lastActiv
 		return
 	}
 
-	lg := logrus.WithField("namespace", service.Namespace).
-		WithField("service", service.Name).
-		WithField("lastActivityTime", lastActivity.LastActivityTime).
-		WithField("delete-after", v)
-
-	lg.Debug("checking delete-after rules")
-
 	thresholdDuration, err := time.ParseDuration(v)
 	if err != nil {
 		return false, fmt.Errorf("time.ParseDuration failed, label %s, value %s", sc.DeleteAfterSelector, v)
@@ -69,7 +62,7 @@ func (sc *serviceController) syncDeleteAfterRules(service *v1.Service, lastActiv
 		if err := sc.clientset.CoreV1().Services(service.Namespace).Delete(context.TODO(), service.Name, metav1.DeleteOptions{}); err != nil {
 			return false, fmt.Errorf("failed to delete service %s/%s, with err %v", service.Namespace, service.Name, err)
 		}
-		lg.Info("delete service successfully")
+		log.Infof("delete service %s/%s successfully", service.Namespace, service.Name)
 		return true, nil
 	}
 
@@ -85,12 +78,7 @@ func (sc *serviceController) syncSleepAfterRules(service *v1.Service, lastActivi
 		return nil
 	}
 
-	lg := logrus.WithField("namespace", service.Namespace).
-		WithField("service", service.Name).
-		WithField("lastActivityTime", lastActivity.LastActivityTime).
-		WithField("sleep-after", v)
-
-	lg.Infoln("ignore sleep-after rules for service, since service do not need support sleep-after rules")
+	log.Infof("ignore sleep-after rules for service %s/%s", service.Namespace, service.Name)
 
 	return nil
 }

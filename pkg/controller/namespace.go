@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sirupsen/logrus"
+	"github.com/qiniu/x/log"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,7 +28,7 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 
 	lastActivityStatus, err := getActivity(ac)
 	if err != nil {
-		logrus.WithError(err).Errorf("Error getActivity: %v", ac)
+		log.Errorf("Error getActivity: %v", ac)
 		return err
 	}
 
@@ -36,7 +36,7 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 
 	// check delete-after-seconds rules
 	if deleted, err := nc.syncDeleteAfterRules(ns, *lastActivityStatus); err != nil {
-		logrus.WithError(err).Errorln("Error SyncDeleteAfterRules")
+		log.Errorf("Error SyncDeleteAfterRules: %v", err)
 		return err
 	} else if deleted {
 		// if namespace is deleted, no need to check sleep-after rules
@@ -45,7 +45,7 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 
 	// check sleep-after rules
 	if err = nc.syncSleepAfterRules(ns, *lastActivityStatus); err != nil {
-		logrus.WithError(err).Errorln("Error SyncSleepAfterRules")
+		log.Errorf("Error SyncSleepAfterRules: %v", err)
 		return err
 	}
 
@@ -70,16 +70,13 @@ func (c *namespaceController) syncDeleteAfterRules(namespace *v1.Namespace, last
 	}
 
 	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration && namespace.Status.Phase != v1.NamespaceTerminating {
-		nl := logrus.WithField("namespace", namespace.Name).
-			WithField("lastActivityTime", lastActivity).
-			WithField("delete-after", v)
 		if !c.DryRun {
 			if err != c.clientset.CoreV1().Namespaces().Delete(context.Background(), namespace.Name, metav1.DeleteOptions{}) {
-				nl.WithError(err).Errorln("error delete namespace")
+				log.Errorf("Error delete namespace: %v", err)
 				return false, err
 			}
 
-			nl.Info("delete inactivity namespace success")
+			log.Info("delete inactivity namespace success")
 			return true, nil
 		}
 	}
@@ -99,10 +96,6 @@ func (c *namespaceController) syncSleepAfterRules(namespace *v1.Namespace, lastA
 		return fmt.Errorf("time.ParseDuration failed, label %s, value %s", c.SleepAfterSelector, v)
 	}
 
-	lg := logrus.WithField("namespace", namespace.Name).
-		WithField("lastActivityTime", lastActivity.LastActivityTime).
-		WithField("sleep-after", v)
-
 	state := namespace.Labels[c.ExecutionStateSelector]
 	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration {
 		switch state {
@@ -113,10 +106,10 @@ func (c *namespaceController) syncSleepAfterRules(namespace *v1.Namespace, lastA
 			if namespace.Status.Phase != v1.NamespaceTerminating && time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration*2 {
 				if !c.DryRun {
 					if err := c.clientset.CoreV1().Namespaces().Delete(context.TODO(), namespace.Name, metav1.DeleteOptions{}); err != nil {
-						lg.WithError(err).Error("Error delete namespace")
+						log.Errorf("Error delete namespace: %v", err)
 						return err
 					}
-					lg.Infoln("delete inactivity namespace successfully")
+					log.Info("delete inactivity namespace success")
 				}
 			}
 		default:
@@ -126,38 +119,39 @@ func (c *namespaceController) syncSleepAfterRules(namespace *v1.Namespace, lastA
 				step2: sleep namespace
 				step3: update execution state with sleep
 			*/
-			lg.Info("try to sleep inactivity namespace")
+			log.Info("try to sleep inactivity namespace")
 			if _, err := c.setKubefreeExecutionState(namespace, SLEEPING); err != nil {
-				lg.WithError(err).Errorln("failed to SetKubefreeExecutionState")
+				log.Errorf("failed to SetKubefreeExecutionState: %v", err)
 				return err
 			}
 			if !c.DryRun {
 				if err := c.sleep(namespace); err != nil {
-					lg.WithError(err).Errorln("failed to sleep namespace")
+					log.Errorf("error sleep namespace: %v", err)
 					return err
 				}
 			}
 			if _, err := c.setKubefreeExecutionState(namespace, SLEEP); err != nil {
-				lg.WithError(err).Errorln("failed to SetKubefreeExecutionState")
+				log.Errorf("failed to SetKubefreeExecutionState: %v", err)
 				return err
 			}
-			lg.Infoln("sleep inactivity namespace successfully")
+			log.Info("sleep inactivity namespace successfully")
 		}
 	} else {
 		switch state {
 		case SLEEPING, SLEEP:
-			lg.Infof("try to wake up namespace %s", namespace.Name)
+			log.Infof("try to wake up namespace %s", namespace.Name)
 			if !c.DryRun {
 				if err := c.wakeUp(namespace); err != nil {
-					lg.WithError(err).Errorln("failed to wake up namespace")
+					log.Errorf("Error wake up namespace: %v", err)
 					return err
 				}
+				log.Info("wake up namespace successfully")
 			}
 
 			if _, err := c.setKubefreeExecutionState(namespace, NORMAL); err != nil {
-				lg.WithError(err).Errorln("failed to SetKubefreeExecutionState")
+				log.Errorf("failed to SetKubefreeExecutionState: %v", err)
 			}
-			lg.Infoln("wake up namespace successfully")
+
 		default:
 			// still in activity time scope,so do nothing
 		}
@@ -192,7 +186,7 @@ func (c *namespaceController) setKubefreeExecutionState(namespace *v1.Namespace,
 
 	result, err := c.clientset.CoreV1().Namespaces().Patch(context.TODO(), namespace.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
-		logrus.Errorf("failed to patch annotation for namespace, namespace: %v , err: %v", namespace.Name, err)
+		log.Errorf("failed to patch annotation for namespace, namespace: %v , err: %v", namespace.Name, err)
 		return nil, err
 	}
 	return result, nil
@@ -221,7 +215,7 @@ func (c *namespaceController) sleep(ns *v1.Namespace) error {
 			return fmt.Errorf("failed to update scale for deployment %s/%s, with err %v", d.Namespace, d.Name, err)
 		}
 
-		logrus.WithField("namespace", ns.Name).WithField("deployment", d.Name).Info("sleep deployment successfully")
+		log.Infof("sleep deployment %s successfully", d.Name)
 	}
 
 	// statefulset
@@ -240,7 +234,7 @@ func (c *namespaceController) sleep(ns *v1.Namespace) error {
 		if err != nil {
 			return fmt.Errorf("failed to update scale for statefulset %s/%s, with err %v", ss.Namespace, ss.Name, err)
 		}
-		logrus.WithField("namespace", ns.Name).WithField("statefulset", ss.Name).Info("sleep statefulset successfully")
+		log.Infof("sleep statefulset %s successfully", ss.Name)
 	}
 
 	// deamonsets
@@ -255,7 +249,7 @@ func (c *namespaceController) sleep(ns *v1.Namespace) error {
 			return fmt.Errorf("failed to set annotation for daemonset %s, err: %v", ss.Name, err)
 		}
 
-		logrus.WithField("namespace", ns.Name).WithField("daemonset", ss.Name).Info("sleep daemonset successfully")
+		log.Infof("sleep daemonsets %v successfully", ss.Name)
 	}
 
 	// TODO: others?
@@ -318,7 +312,7 @@ func (c *namespaceController) wakeUp(ns *v1.Namespace) error {
 			defer workloadWg.Done()
 			_, err = c.patchDaemonsetWithoutSpecificNodeAffinity(&ds, LegacyReplicasAnnotation, strconv.FormatInt(int64(ds.Status.DesiredNumberScheduled), 10))
 			if err != nil {
-				logrus.Infof("Failed scaled for daemonsets %s/%s, err: %v", ds.Namespace, ds.Name, err)
+				log.Errorf("failed to set annotation for daemonset %s, err: %v", ds.Name, err)
 				errCh <- err
 				utilruntime.HandleError(err)
 			}
@@ -336,7 +330,7 @@ func (c *namespaceController) wakeUp(ns *v1.Namespace) error {
 			defer workloadWg.Done()
 			_, err = c.scale(context.TODO(), d.Name, d.Namespace, v, schema.GroupResource{Group: "apps", Resource: "deployments"})
 			if err != nil {
-				logrus.Infof("Failed scaled for deployment %q/%q", d.Namespace, d.Name)
+				log.Errorf("failed to update scale for deployment %s/%s, with err %v", d.Namespace, d.Name, err)
 				errCh <- err
 				utilruntime.HandleError(err)
 			}
@@ -353,7 +347,7 @@ func (c *namespaceController) wakeUp(ns *v1.Namespace) error {
 			defer workloadWg.Done()
 			_, err = c.scale(context.TODO(), ss.Name, ss.Namespace, v, schema.GroupResource{Group: "apps", Resource: "statefulsets"})
 			if err != nil {
-				logrus.Infof("Failed scaled for deployment %q/%q", ss.Namespace, ss.Name)
+				log.Errorf("failed to update scale for statefulset %s/%s, with err %v", ss.Namespace, ss.Name, err)
 				errCh <- err
 				utilruntime.HandleError(err)
 			}
