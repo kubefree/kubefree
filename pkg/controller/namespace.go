@@ -35,9 +35,12 @@ func (c *controller) checkNamespace(ns *v1.Namespace) error {
 	nc := namespaceController{controller: *c}
 
 	// check delete-after-seconds rules
-	if err = nc.syncDeleteAfterRules(ns, *lastActivityStatus); err != nil {
+	if deleted, err := nc.syncDeleteAfterRules(ns, *lastActivityStatus); err != nil {
 		logrus.WithError(err).Errorln("Error SyncDeleteAfterRules")
 		return err
+	} else if deleted {
+		// if namespace is deleted, no need to check sleep-after rules
+		return nil
 	}
 
 	// check sleep-after rules
@@ -54,16 +57,16 @@ type namespaceController struct {
 }
 
 // target delete-after rules
-func (c *namespaceController) syncDeleteAfterRules(namespace *v1.Namespace, lastActivity activity) error {
+func (c *namespaceController) syncDeleteAfterRules(namespace *v1.Namespace, lastActivity activity) (deleted bool, err error) {
 	v, ok := namespace.Labels[c.DeleteAfterSelector]
 	if !ok || v == "" {
 		// namespace doesn't have delete-after label, do nothing
-		return nil
+		return
 	}
 
 	thresholdDuration, err := time.ParseDuration(v)
 	if err != nil {
-		return fmt.Errorf("time.ParseDuration failed, label %s, value %s", c.DeleteAfterSelector, v)
+		return false, fmt.Errorf("time.ParseDuration failed, label %s, value %s", c.DeleteAfterSelector, v)
 	}
 
 	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration && namespace.Status.Phase != v1.NamespaceTerminating {
@@ -73,13 +76,14 @@ func (c *namespaceController) syncDeleteAfterRules(namespace *v1.Namespace, last
 		if !c.DryRun {
 			if err != c.clientset.CoreV1().Namespaces().Delete(context.Background(), namespace.Name, metav1.DeleteOptions{}) {
 				nl.WithError(err).Errorln("error delete namespace")
-				return err
+				return false, err
 			}
 
 			nl.Info("delete inactivity namespace success")
+			return true, nil
 		}
 	}
-	return nil
+	return
 }
 
 // target sleep-after rules

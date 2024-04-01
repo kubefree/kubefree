@@ -26,9 +26,12 @@ func (c *controller) checkService(service *v1.Service) error {
 
 	s := &serviceController{controller: *c}
 
-	if err := s.syncDeleteAfterRules(service, *activity); err != nil {
+	if deleted, err := s.syncDeleteAfterRules(service, *activity); err != nil {
 		logrus.WithError(err).Errorln("Error SyncDeleteAfterRules")
 		return err
+	} else if deleted {
+		// service has been deleted, do nothing
+		return nil
 	}
 
 	if err := s.syncSleepAfterRules(service, *activity); err != nil {
@@ -43,11 +46,11 @@ type serviceController struct {
 	controller
 }
 
-func (sc *serviceController) syncDeleteAfterRules(service *v1.Service, lastActivity activity) error {
+func (sc *serviceController) syncDeleteAfterRules(service *v1.Service, lastActivity activity) (deleted bool, err error) {
 	v, ok := service.Labels[sc.DeleteAfterSelector]
 	if !ok || v == "" {
 		// namespace doesn't have delete-after label, do nothing
-		return nil
+		return
 	}
 
 	lg := logrus.WithField("namespace", service.Namespace).
@@ -59,17 +62,18 @@ func (sc *serviceController) syncDeleteAfterRules(service *v1.Service, lastActiv
 
 	thresholdDuration, err := time.ParseDuration(v)
 	if err != nil {
-		return fmt.Errorf("time.ParseDuration failed, label %s, value %s", sc.DeleteAfterSelector, v)
+		return false, fmt.Errorf("time.ParseDuration failed, label %s, value %s", sc.DeleteAfterSelector, v)
 	}
 
 	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration {
 		if err := sc.clientset.CoreV1().Services(service.Namespace).Delete(context.TODO(), service.Name, metav1.DeleteOptions{}); err != nil {
-			return fmt.Errorf("failed to delete service %s/%s, with err %v", service.Namespace, service.Name, err)
+			return false, fmt.Errorf("failed to delete service %s/%s, with err %v", service.Namespace, service.Name, err)
 		}
 		lg.Info("delete service successfully")
+		return true, nil
 	}
 
-	return nil
+	return
 }
 
 // ignore sleep-after rules for service, since service do not need support sleep-after rules
