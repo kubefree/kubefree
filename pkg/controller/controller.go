@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -180,6 +181,14 @@ func (c *controller) handleErr(err error, key interface{}) {
 		// Forget about the #AddRateLimited history of the key on every successful synchronization.
 		// This ensures that future processing of updates for this key is not delayed because of
 		// an outdated error history.
+		c.queue.Forget(key)
+		return
+	}
+
+	if strings.Contains(err.Error(), "not found") {
+		// No need to retry if the resource is not found
+		// Even if this is not a exact 'not found' error, we can still forget the key since it will be requeued
+		// after next resync.
 		c.queue.Forget(key)
 		return
 	}

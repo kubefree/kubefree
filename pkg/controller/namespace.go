@@ -312,13 +312,13 @@ func (c *namespaceController) wakeUp(ns *v1.Namespace) error {
 	for _, dsItem := range dsLists.Items {
 		v, ok := dsItem.Annotations[LegacyReplicasAnnotation]
 		if !ok || len(v) == 0 {
-			return fmt.Errorf("unexpected legacy replicas annotation %s for the daemonset %s", LegacyReplicasAnnotation, dsItem.Name)
+			return fmt.Errorf("unexpected legacy replicas annotation %s for the daemonsets %s", LegacyReplicasAnnotation, dsItem.Name)
 		}
 		go func(ds apps.DaemonSet) {
 			defer workloadWg.Done()
 			_, err = c.patchDaemonsetWithoutSpecificNodeAffinity(&ds, LegacyReplicasAnnotation, strconv.FormatInt(int64(ds.Status.DesiredNumberScheduled), 10))
 			if err != nil {
-				logrus.Infof("Failed scaled for daemonset %q/%q", ds.Namespace, &ds.Name)
+				logrus.Infof("Failed scaled for daemonsets %s/%s, err: %v", ds.Namespace, ds.Name, err)
 				errCh <- err
 				utilruntime.HandleError(err)
 			}
