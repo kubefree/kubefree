@@ -18,7 +18,7 @@ func main() {
 	var dryRun bool
 	var resyncDuration time.Duration
 
-	flag.IntVar(&logLevel, "logLevel", 0, "log level")
+	flag.IntVar(&logLevel, "logLevel", 1, "log level")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "absolute path to the kubeconfig file")
 	flag.BoolVar(&dryRun, "dryRun", false, "If set, kubefree controller will not delete or sleep namespace, but still annotate it")
 	flag.DurationVar(&resyncDuration, "resyncDuration", time.Minute, "Resync duration for kubefree controller to list all namespaces")

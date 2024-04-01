@@ -11,6 +11,7 @@ import (
 	"github.com/qiniu/x/log"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -71,6 +72,15 @@ func (c *namespaceController) syncDeleteAfterRules(namespace *v1.Namespace, last
 
 	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration && namespace.Status.Phase != v1.NamespaceTerminating {
 		if !c.DryRun {
+			namespace, err := c.clientset.CoreV1().Namespaces().Get(context.TODO(), namespace.Name, metav1.GetOptions{})
+			if err != nil {
+				if apierrors.IsNotFound(err) {
+					return true, nil
+				}
+
+				return false, err
+			}
+
 			if err != c.clientset.CoreV1().Namespaces().Delete(context.Background(), namespace.Name, metav1.DeleteOptions{}) {
 				log.Errorf("Error delete namespace: %v", err)
 				return false, err
