@@ -1,13 +1,22 @@
 package controller
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/apimachinery/pkg/util/wait"
 	cacheddiscovery "k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
@@ -176,6 +185,14 @@ func (c *controller) handleErr(err error, key interface{}) {
 		return
 	}
 
+	if strings.Contains(err.Error(), "not found") {
+		// No need to retry if the resource is not found
+		// Even if this is not a exact 'not found' error, we can still forget the key since it will be requeued
+		// after next resync.
+		c.queue.Forget(key)
+		return
+	}
+
 	// This controller retries 5 times if something goes wrong. After that, it stops trying.
 	if c.queue.NumRequeues(key) < 5 {
 		logrus.Infof("Error syncing %v: %v", key, err)
@@ -190,4 +207,216 @@ func (c *controller) handleErr(err error, key interface{}) {
 	// Report to an external entity that, even after several retries, we could not successfully process this key
 	runtime.HandleError(err)
 	logrus.Errorf("failed to handle %v, err: %v, dropping this key from the queue", key, err)
+}
+
+func (c *controller) patchDeploymentWithAnnotation(d *appsv1.Deployment, annotation, value string) (*appsv1.Deployment, error) {
+	if d == nil {
+		return nil, fmt.Errorf("unexpected deployment as nil")
+	}
+	oldDeploymentData, err := json.Marshal(d)
+	if err != nil {
+		return nil, err
+	}
+
+	newD := d.DeepCopy()
+	if newD.Annotations == nil {
+		newD.Annotations = make(map[string]string)
+	}
+
+	newD.Annotations[annotation] = value
+	newDeploymentData, err := json.Marshal(newD)
+	if err != nil {
+		return nil, err
+	}
+
+	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldDeploymentData, newDeploymentData, &appsv1.Deployment{})
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := c.clientset.AppsV1().Deployments(d.Namespace).Patch(context.TODO(), d.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+	if err != nil {
+		logrus.Errorf("failed to patch annotation for deployment, deployment: %v, err: %v ", d.Name, err)
+		return nil, err
+	}
+	return result, nil
+}
+
+func (c *controller) patchStatefulsetWithAnnotation(s *appsv1.StatefulSet, annotation, value string) (*appsv1.StatefulSet, error) {
+	if s == nil {
+		return nil, fmt.Errorf("unexpected statefulset as nil")
+	}
+
+	oldData, err := json.Marshal(s)
+	if err != nil {
+		return nil, err
+	}
+
+	newD := s.DeepCopy()
+	if newD.Annotations == nil {
+		newD.Annotations = make(map[string]string)
+	}
+
+	newD.Annotations[annotation] = value
+	newData, err := json.Marshal(newD)
+	if err != nil {
+		return nil, err
+	}
+
+	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, &appsv1.StatefulSet{})
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := c.clientset.AppsV1().StatefulSets(s.Namespace).Patch(context.TODO(), s.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+	if err != nil {
+		logrus.Errorf("failed to patch annotation for statefulset, statefulset: %v, err: %v ", s.Name, err)
+		return nil, err
+	}
+	return result, nil
+}
+
+// hardcode flag for sleep daemonset
+var defaultExpression = v1.NodeSelectorRequirement{
+	Key:      "sleep.kubefree.com/not-existing-key",
+	Operator: v1.NodeSelectorOpIn,
+	Values:   []string{"sleep"},
+}
+
+func (c *controller) patchDaemonsetWithNodeAffinity(s *appsv1.DaemonSet, annotation, value string) (*appsv1.DaemonSet, error) {
+	if s == nil {
+		return nil, fmt.Errorf("unexpected statefulset as nil")
+	}
+
+	oldData, err := json.Marshal(s)
+	if err != nil {
+		return nil, err
+	}
+
+	newD := s.DeepCopy()
+	if newD.Annotations == nil {
+		newD.Annotations = make(map[string]string)
+	}
+
+	// still patch daemonset with legacy-replicas annotation
+	newD.Annotations[annotation] = value
+
+	if newD.Spec.Template.Spec.Affinity == nil {
+		newD.Spec.Template.Spec.Affinity = &v1.Affinity{}
+	}
+
+	if newD.Spec.Template.Spec.Affinity.NodeAffinity == nil {
+		newD.Spec.Template.Spec.Affinity.NodeAffinity = &v1.NodeAffinity{}
+	}
+
+	if newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = &v1.NodeSelector{}
+	}
+
+	if newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms == nil {
+		newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = []v1.NodeSelectorTerm{}
+	}
+
+	selectorTerm := v1.NodeSelectorTerm{}
+	selectorTerm.MatchExpressions = append(selectorTerm.MatchExpressions, defaultExpression)
+	newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = append(newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms, selectorTerm)
+
+	newData, err := json.Marshal(newD)
+	if err != nil {
+		return nil, err
+	}
+
+	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, &appsv1.DaemonSet{})
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := c.clientset.AppsV1().DaemonSets(s.Namespace).Patch(context.TODO(), s.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+	if err != nil {
+		logrus.Errorf("failed to patch annotation for daemonsets, daemonsets: %v, err: %v", s.Name, err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+func (c *controller) patchDaemonsetWithoutSpecificNodeAffinity(s *appsv1.DaemonSet, key, value string) (*appsv1.DaemonSet, error) {
+	if s == nil {
+		return nil, fmt.Errorf("unexpected statefulset as nil")
+	}
+
+	oldData, err := json.Marshal(s)
+	if err != nil {
+		return nil, err
+	}
+
+	newD := s.DeepCopy()
+	if newD.Spec.Template.Spec.Affinity == nil ||
+		newD.Spec.Template.Spec.Affinity.NodeAffinity == nil ||
+		newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil ||
+		newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms == nil ||
+		len(newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms) == 0 {
+
+		return nil, nil
+	}
+
+	var newSelectorTerm = []v1.NodeSelectorTerm{}
+	for _, st := range newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
+		var newExpression = []v1.NodeSelectorRequirement{}
+		for _, express := range st.MatchExpressions {
+			// remove default expression patched by kubefree
+			if express.Key != defaultExpression.Key {
+				newExpression = append(newExpression, express)
+			}
+		}
+
+		if len(newExpression) != 0 {
+			var newNodeSelectorTerm = st
+			newNodeSelectorTerm.MatchExpressions = newExpression
+			newSelectorTerm = append(newSelectorTerm, newNodeSelectorTerm)
+		}
+	}
+
+	if len(newSelectorTerm) != 0 {
+		newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = newSelectorTerm
+	} else {
+		newD.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = nil
+	}
+
+	newData, err := json.Marshal(newD)
+	if err != nil {
+		return nil, err
+	}
+
+	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, &appsv1.DaemonSet{})
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := c.clientset.AppsV1().DaemonSets(s.Namespace).Patch(context.TODO(), s.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+	if err != nil {
+		logrus.Errorf("failed to patch annotation for daemonsets, daemonsets: %v, err: %v ", s.Name, err)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+func (c *controller) scale(ctx context.Context, name, namespace, scale string, resource schema.GroupResource) (*autoscalingv1.Scale, error) {
+	i, err := strconv.ParseInt(scale, 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("strconv.ParseInt failed for scale %s/%s", namespace, name)
+	}
+
+	targetScale := &autoscalingv1.Scale{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: autoscalingv1.ScaleSpec{
+			Replicas: int32(i),
+		},
+	}
+
+	return c.scalesGetter.Scales(namespace).Update(ctx, resource, targetScale, metav1.UpdateOptions{})
 }

@@ -33,9 +33,12 @@ func (c *controller) checkDeployment(deployment *appsv1.Deployment) error {
 	d := &deploymentController{controller: *c}
 
 	// check delete-after-seconds rules
-	if err = d.syncDeleteAfterRules(deployment, *activity); err != nil {
+	if deleted, err := d.syncDeleteAfterRules(deployment, *activity); err != nil {
 		logrus.WithError(err).Errorln("Error SyncDeleteAfterRules")
 		return err
+	} else if deleted {
+		// if deleted, no need to check sleep-after rules
+		return nil
 	}
 
 	// check sleep-after rules
@@ -51,11 +54,11 @@ type deploymentController struct {
 	controller
 }
 
-func (dc *deploymentController) syncDeleteAfterRules(deployment *appsv1.Deployment, lastActivity activity) error {
+func (dc *deploymentController) syncDeleteAfterRules(deployment *appsv1.Deployment, lastActivity activity) (deleted bool, err error) {
 	v, ok := deployment.Labels[dc.DeleteAfterSelector]
 	if !ok || v == "" {
 		// namespace doesn't have delete-after label, do nothing
-		return nil
+		return
 	}
 
 	lg := logrus.WithField("namespace", deployment.Namespace).
@@ -67,19 +70,21 @@ func (dc *deploymentController) syncDeleteAfterRules(deployment *appsv1.Deployme
 
 	thresholdDuration, err := time.ParseDuration(v)
 	if err != nil {
-		return fmt.Errorf("time.ParseDuration failed, label %s, value %s", dc.DeleteAfterSelector, v)
+		return false, fmt.Errorf("time.ParseDuration failed, label %s, value %s", dc.DeleteAfterSelector, v)
 	}
 
 	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration {
 		if !dc.DryRun {
 			if err != dc.clientset.AppsV1().Deployments(deployment.Namespace).Delete(context.Background(), deployment.Name, metav1.DeleteOptions{}) {
 				lg.WithError(err).Errorln("Error delete deployment")
-				return err
+				return false, err
 			}
 			lg.Info("delete deployment successfully")
+			return true, nil
 		}
 	}
-	return nil
+
+	return
 }
 
 func (dc *deploymentController) syncSleepAfterRules(deployment *appsv1.Deployment, lastActivity activity) error {
@@ -244,7 +249,7 @@ func (dc *deploymentController) wakeUp(deployment *appsv1.Deployment) error {
 	}
 
 	// remove legacy replicas annotation after wake up to avoid duplicate wake up
-	if _, err := dc.deleteAnnotation(deployment, LegacyReplicasAnnotation); err != nil {
+	if _, err := dc.deleteAnnotation(de, LegacyReplicasAnnotation); err != nil {
 		return fmt.Errorf("failed to patch deployment %s, err: %v", de.Name, err)
 	}
 
