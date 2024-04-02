@@ -7,7 +7,7 @@ install:
 	go install ./...
 linux-build:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build .	
-docker-build: linux-build ## Build docker image with the manager.
+docker-build: 
 	docker build -t ${IMG} .
 docker-push: ## Push docker image with the manager.
 	docker push ${IMG}
