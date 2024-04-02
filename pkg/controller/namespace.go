@@ -86,7 +86,7 @@ func (c *namespaceController) syncDeleteAfterRules(namespace *v1.Namespace, last
 				return false, err
 			}
 
-			log.Info("delete inactivity namespace success")
+			log.Infof("delete inactivity namespace %s success", namespace.Name)
 			return true, nil
 		}
 	}
@@ -119,7 +119,7 @@ func (c *namespaceController) syncSleepAfterRules(namespace *v1.Namespace, lastA
 						log.Errorf("Error delete namespace: %v", err)
 						return err
 					}
-					log.Info("delete inactivity namespace success")
+					log.Infof("delete inactivity namespace %s success", namespace.Name)
 				}
 			}
 		default:
@@ -139,12 +139,12 @@ func (c *namespaceController) syncSleepAfterRules(namespace *v1.Namespace, lastA
 					log.Errorf("error sleep namespace: %v", err)
 					return err
 				}
+				log.Infof("sleep inactivity namespace %s successfully", namespace.Name)
 			}
 			if _, err := c.setKubefreeExecutionState(namespace, SLEEP); err != nil {
 				log.Errorf("failed to SetKubefreeExecutionState: %v", err)
 				return err
 			}
-			log.Info("sleep inactivity namespace successfully")
 		}
 	} else {
 		switch state {
@@ -155,7 +155,7 @@ func (c *namespaceController) syncSleepAfterRules(namespace *v1.Namespace, lastA
 					log.Errorf("Error wake up namespace: %v", err)
 					return err
 				}
-				log.Info("wake up namespace successfully")
+				log.Infof("wake up namespace %s successfully", namespace.Name)
 			}
 
 			if _, err := c.setKubefreeExecutionState(namespace, NORMAL); err != nil {

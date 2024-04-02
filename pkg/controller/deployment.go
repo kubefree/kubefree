@@ -134,12 +134,12 @@ func (dc *deploymentController) syncSleepAfterRules(deployment *appsv1.Deploymen
 					log.Errorf("Error sleep deployment: %v", err)
 					return err
 				}
+				log.Infof("sleep inactivity deployment %s successfully", deployment.Name)
 			}
 			if _, err := dc.setKubefreeExecutionState(deployment, SLEEP); err != nil {
 				log.Errorf("failed to SetKubefreeExecutionState: %v", err)
 				return err
 			}
-			log.Infof("sleep inactivity deployment %s successfully", deployment.Name)
 		}
 	} else {
 		switch state {
