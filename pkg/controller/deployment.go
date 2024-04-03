@@ -69,7 +69,7 @@ func (dc *deploymentController) syncDeleteAfterRules(deployment *appsv1.Deployme
 
 	if time.Since(lastActivity.LastActivityTime.Time()) > thresholdDuration {
 		if !dc.DryRun {
-			if err != dc.clientset.AppsV1().Deployments(deployment.Namespace).Delete(context.Background(), deployment.Name, metav1.DeleteOptions{}) {
+			if err := dc.clientset.AppsV1().Deployments(deployment.Namespace).Delete(context.Background(), deployment.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 				log.Errorf("Error delete deployment: %v", err)
 				return false, err
 			}
@@ -110,7 +110,7 @@ func (dc *deploymentController) syncSleepAfterRules(deployment *appsv1.Deploymen
 						return err
 					}
 
-					if err := dc.clientset.AppsV1().Deployments(deployment.Namespace).Delete(context.Background(), deployment.Name, metav1.DeleteOptions{}); err != nil {
+					if err := dc.clientset.AppsV1().Deployments(deployment.Namespace).Delete(context.Background(), deployment.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 						log.Errorf("Error delete deployment: %v", err)
 						return err
 					}
@@ -191,7 +191,7 @@ func (dc *deploymentController) setKubefreeExecutionState(deployment *appsv1.Dep
 	}
 
 	result, err := dc.clientset.AppsV1().Deployments(deployment.Namespace).Patch(context.TODO(), deployment.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
-	if err != nil {
+	if err != nil && !apierrors.IsNotFound(err) {
 		log.Errorf("failed to patch annotation for deployment, deployment: %v , err: %v", fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name), err)
 		return nil, err
 	}
@@ -280,7 +280,7 @@ func (dc *deploymentController) updateAnnotation(d *appsv1.Deployment, annotatio
 	}
 
 	result, err := dc.clientset.AppsV1().Deployments(d.Namespace).Patch(context.TODO(), d.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
-	if err != nil {
+	if err != nil && !apierrors.IsNotFound(err) {
 		return nil, err
 	}
 	return result, nil
@@ -314,7 +314,7 @@ func (dc *deploymentController) deleteAnnotation(deployment *appsv1.Deployment, 
 	}
 
 	de, err := dc.clientset.AppsV1().Deployments(deployment.Namespace).Patch(context.TODO(), deployment.Name, types.StrategicMergePatchType, patchData, metav1.PatchOptions{})
-	if err != nil {
+	if err != nil && !apierrors.IsNotFound(err) {
 		return nil, fmt.Errorf("failed to patch deployment %s, err: %v", deployment.Name, err)
 	}
 
