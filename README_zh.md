@@ -35,7 +35,7 @@ kubectl apply -f deploy.yaml
 
 ### 应用实例
 
-[参考例子](https://github.com/goplus/builder/pull/280#issuecomment-2033752952) 
+[参考例子](https://github.com/goplus/builder/blob/dev/scripts/pr-preview.sh#L23)
 
 ### 关于 lastActivityTime 
 
