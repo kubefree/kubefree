@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubefree
+  namespace: kubefree
+  labels:
+    app: kubefree
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubefree
+  template:
+    metadata:
+      labels:
+        app: kubefree
+    spec:
+      serviceAccount: kubefree
+      containers:
+        - name: kubefree
+          image: hubji/kubefree:latest
+          imagePullPolicy: Always
+          args:
+            - -resyncDuration=10m
+            - -dryRun
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubefree
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubefree
+  namespace: kubefree
+  labels:
+    app: kubefree
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kubefree
+  labels:
+    app: kubefree
+subjects:
+- kind: ServiceAccount
+  name: kubefree
+  namespace: kubefree
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
